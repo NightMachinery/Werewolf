@@ -29,12 +29,22 @@ describe('game page', () => {
     };
 
     const window = { location: { href: 'host/game/ABCD' }, fetch: () => {} };
+    let originalClipboard;
 
     beforeEach(async () => {
         document.body.innerHTML = '';
+        originalClipboard = navigator.clipboard;
         const response = new Response('production', { status: 200, statusText: 'OK' });
         spyOn(window, 'fetch').and.resolveTo(response);
     });
+
+    afterEach(() => {
+        Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: originalClipboard
+        });
+    });
+
     describe('lobby game - moderator view', () => {
         beforeEach(async () => {
             mockSocket.emit = function (eventName, ...args) {
@@ -88,6 +98,24 @@ describe('game page', () => {
                 jasmine.any(Object),
                 jasmine.any(Function)
             );
+        });
+
+        it('should fall back to execCommand copy when the clipboard API fails', async () => {
+            Object.defineProperty(navigator, 'clipboard', {
+                configurable: true,
+                value: {
+                    writeText: jasmine.createSpy('writeText').and.returnValue(Promise.reject(new Error('Not allowed')))
+                }
+            });
+            spyOn(document, 'execCommand').and.returnValue(true);
+
+            document.getElementById('game-link').click();
+            await Promise.resolve();
+            await Promise.resolve();
+
+            expect(navigator.clipboard.writeText).toHaveBeenCalled();
+            expect(document.execCommand).toHaveBeenCalledWith('copy');
+            expect(document.getElementById('current-info-message').innerText).toEqual('Link copied!');
         });
 
         afterAll(() => {

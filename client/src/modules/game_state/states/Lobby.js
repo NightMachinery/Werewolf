@@ -380,14 +380,58 @@ function enableLeaveButton (buttonContainer, handler) {
 function activateLink (linkContainer, link) {
     const linkCopyHandler = (e) => {
         if (e.type === 'click' || e.code === 'Enter') {
-            navigator.clipboard.writeText(link)
+            copyTextToClipboard(link)
                 .then(() => {
                     toast('Link copied!', 'success', true);
+                })
+                .catch(() => {
+                    toast('Could not copy the link automatically.', 'error', true);
                 });
         }
     };
     linkContainer.addEventListener('click', linkCopyHandler);
     linkContainer.addEventListener('keyup', linkCopyHandler);
+}
+
+function copyTextToClipboard (text) {
+    if (navigator.clipboard?.writeText) {
+        return navigator.clipboard.writeText(text)
+            .catch(() => copyTextToClipboardWithExecCommand(text));
+    }
+
+    return copyTextToClipboardWithExecCommand(text);
+}
+
+function copyTextToClipboardWithExecCommand (text) {
+    return new Promise((resolve, reject) => {
+        if (typeof document.execCommand !== 'function') {
+            reject(new Error('Clipboard copy is unavailable.'));
+            return;
+        }
+
+        const copyTarget = document.createElement('textarea');
+        copyTarget.value = text;
+        copyTarget.setAttribute('readonly', '');
+        copyTarget.setAttribute('aria-hidden', 'true');
+        copyTarget.style.position = 'fixed';
+        copyTarget.style.top = '0';
+        copyTarget.style.left = '0';
+        copyTarget.style.opacity = '0';
+
+        document.body.appendChild(copyTarget);
+        copyTarget.focus();
+        copyTarget.select();
+        copyTarget.setSelectionRange(0, copyTarget.value.length);
+
+        const copied = document.execCommand('copy');
+        copyTarget.remove();
+
+        if (copied) {
+            resolve();
+        } else {
+            reject(new Error('Clipboard copy failed.'));
+        }
+    });
 }
 
 function getTimeString (gameState) {
