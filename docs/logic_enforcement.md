@@ -32,7 +32,7 @@ It enforces:
 - the moderator slot is assigned first if the current moderator has not joined yet
 - once a game is already full/startable, additional joins become spectators automatically
 - joins during an in-progress game also become spectators
-- spectators are capped at **25**
+- spectators are capped at **100**
 - the lobby tracks `isStartable`, meaning player count must match deck size before the game can start
 
 ### Start-game behavior
@@ -76,17 +76,26 @@ There are two moderator flows:
 
 Temporary moderator automation:
 
-- the first time a temporary moderator uses the kill action, the server runs `assignDedicatedMod`
+- when a temporary moderator uses the kill action, the client offers:
+  - **Just Kill**
+  - **Kill + Make Dedicated Mod**
+  - **Cancel**
+- choosing **Just Kill** kills the target and keeps the temp moderator in place
+- choosing **Kill + Make Dedicated Mod** runs `assignDedicatedMod`
 - the selected target becomes the new dedicated moderator
 - that new moderator is marked `out = true` and `killed = true`
-- if the temporary moderator killed someone else, the former temp moderator becomes a normal player again
-- if the temporary moderator targets themself, they become the killed dedicated moderator themself
+- if the temporary moderator picked someone else, the former temp moderator becomes a normal player again
+- if the temporary moderator picked themself, they become the killed dedicated moderator themself
 
 Manual dedicated moderator transfer:
 
 - can transfer only to a **killed player** or **spectator**
 - cannot transfer to an active living player
 - the previous moderator becomes a spectator if they had no role, or a killed player if they did
+- the original room creator can always override moderator assignment:
+  - living non-bot participants can be made **temporary moderators**
+  - killed players and spectators can be made **dedicated moderators**
+  - the current moderator can be demoted, which returns moderator status to the creator
 
 ### Timer automation
 
@@ -94,6 +103,7 @@ If a game has a timer:
 
 - the server owns the authoritative timer state
 - play/pause updates are synced through Redis
+- current moderators can reset the timer back to full duration, and reset immediately starts it running again
 - late-joining/reconnecting clients can ask for current remaining time
 - if the instance that receives the request does not own the timer thread, it asks the owning instance to source the timer data
 - when the timer expires, the server emits `endTimer`, sets remaining time to `0`, and marks the timer as ended

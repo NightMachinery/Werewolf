@@ -16,6 +16,92 @@ import { ModalManager } from '../../../front_end_components/ModalManager.js';
 // This constant is meant to house logic that is utilized by more than one game state
 export const SharedStateUtil = {
 
+    clientIsOriginalModerator: (gameState) => gameState.client.id === gameState.originalModeratorId,
+
+    ensureModeratorControlModal: () => {
+        const modalPrompt = document.getElementById('moderator-control-prompt');
+        if (modalPrompt && !document.getElementById('moderator-control-modal')) {
+            modalPrompt.innerHTML = HTMLFragments.MODERATOR_CONTROL_MODAL;
+        }
+    },
+
+    openModeratorControlModal: (gameState, socket) => {
+        SharedStateUtil.ensureModeratorControlModal();
+        const modalContent = document.getElementById('moderator-control-modal-content');
+        if (!modalContent) {
+            return;
+        }
+        modalContent.innerHTML = '';
+        const currentModerator = gameState.people.find(person => person.id === gameState.currentModeratorId);
+        const creatorName = gameState.client.name;
+        let actionCount = 0;
+
+        const appendAction = (label, confirmationText, payload) => {
+            actionCount ++;
+            const action = document.createElement('button');
+            action.classList.add('player-option');
+            action.innerText = label;
+            action.addEventListener('click', () => {
+                ModalManager.dispelModal('moderator-control-modal', 'moderator-control-modal-background');
+                Confirmation(confirmationText, () => {
+                    toast('Updating moderator...', 'neutral', true, false);
+                    socket.emit(
+                        SOCKET_EVENTS.IN_GAME_MESSAGE,
+                        EVENT_IDS.SET_MODERATOR_STATUS,
+                        gameState.accessCode,
+                        payload
+                    );
+                });
+            });
+            modalContent.appendChild(action);
+        };
+
+        if (currentModerator && currentModerator.id !== gameState.originalModeratorId) {
+            appendAction(
+                `Demote ${currentModerator.name} and return moderator to ${creatorName}`,
+                `Demote '${currentModerator.name}' and return moderator powers to '${creatorName}'?`,
+                { personId: currentModerator.id, mode: 'demote' }
+            );
+        }
+
+        for (const person of gameState.people) {
+            if (person.id === gameState.currentModeratorId) {
+                continue;
+            }
+
+            if (
+                !person.out
+                && person.userType !== USER_TYPES.BOT
+                && person.userType !== USER_TYPES.KILLED_BOT
+            ) {
+                appendAction(
+                    `Make ${person.name} temp mod ${USER_TYPE_ICONS[person.userType] || ''}`.trim(),
+                    `Make '${person.name}' the new temporary moderator?`,
+                    { personId: person.id, mode: 'temp' }
+                );
+                continue;
+            }
+
+            if (person.userType === USER_TYPES.KILLED_PLAYER || person.userType === USER_TYPES.SPECTATOR) {
+                appendAction(
+                    `Make ${person.name} dedicated mod ${USER_TYPE_ICONS[person.userType] || ''}`.trim(),
+                    `Make '${person.name}' the new dedicated moderator?`,
+                    { personId: person.id, mode: 'dedicated' }
+                );
+            }
+        }
+
+        if (actionCount === 0) {
+            modalContent.innerHTML = '<div>No moderator actions are currently available.</div>';
+        }
+
+        ModalManager.displayModal(
+            'moderator-control-modal',
+            'moderator-control-modal-background',
+            'close-moderator-control-modal-button'
+        );
+    },
+
     restartHandler: (stateBucket, status = STATUS.IN_PROGRESS) => {
         fetch(
             '/api/games/' + stateBucket.currentGameState.accessCode + '/restart',

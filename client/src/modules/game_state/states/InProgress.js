@@ -98,6 +98,7 @@ export class InProgress {
     }
 
     renderPlayerView (isKilled = false) {
+        insertModeratorControlButton(this.stateBucket.currentGameState, this.socket);
         if (isKilled) {
             const clientUserType = document.getElementById('client-user-type');
             if (clientUserType) {
@@ -159,29 +160,36 @@ export class InProgress {
 
     renderModeratorView () {
         createEndGamePromptComponent(this.socket, this.stateBucket);
+        insertResetTimerButton(this.stateBucket.currentGameState, this.socket);
+        insertModeratorControlButton(this.stateBucket.currentGameState, this.socket);
 
         const modTransferButton = document.getElementById('mod-transfer-button');
-        modTransferButton.addEventListener(
-            'click', () => {
-                this.displayAvailableModerators();
-                ModalManager.displayModal(
-                    'transfer-mod-modal',
-                    'transfer-mod-modal-background',
-                    'close-mod-transfer-modal-button'
-                );
-            }
-        );
+        if (modTransferButton && !SharedStateUtil.clientIsOriginalModerator(this.stateBucket.currentGameState)) {
+            modTransferButton.addEventListener(
+                'click', () => {
+                    this.displayAvailableModerators();
+                    ModalManager.displayModal(
+                        'transfer-mod-modal',
+                        'transfer-mod-modal-background',
+                        'close-mod-transfer-modal-button'
+                    );
+                }
+            );
+        }
         this.renderPlayersWithRoleAndAlignmentInfo();
     }
 
     renderTempModView () {
         createEndGamePromptComponent(this.socket, this.stateBucket);
+        insertResetTimerButton(this.stateBucket.currentGameState, this.socket);
+        insertModeratorControlButton(this.stateBucket.currentGameState, this.socket);
 
         renderPlayerRole(this.stateBucket.currentGameState);
         this.renderPlayersWithNoRoleInformationUnlessRevealed(true);
     }
 
     renderSpectatorView () {
+        insertModeratorControlButton(this.stateBucket.currentGameState, this.socket);
         SharedStateUtil.displayCurrentModerator(this.stateBucket.currentGameState.people
             .find((person) => person.userType === USER_TYPES.MODERATOR
                 || person.userType === USER_TYPES.TEMPORARY_MODERATOR));
@@ -389,13 +397,13 @@ export class InProgress {
                 }
             } else if (!player.out && moderatorType) {
                 killPlayerHandlers[player.id] = () => {
-                    Confirmation('Kill \'' + player.name + '\'?', () => {
-                        if (this.stateBucket.currentGameState.client.userType === USER_TYPES.TEMPORARY_MODERATOR) {
-                            socket.emit(SOCKET_EVENTS.IN_GAME_MESSAGE, EVENT_IDS.ASSIGN_DEDICATED_MOD, accessCode, { personId: player.id });
-                        } else {
+                    if (this.stateBucket.currentGameState.client.userType === USER_TYPES.TEMPORARY_MODERATOR) {
+                        displayTempModeratorKillChoice(player, accessCode, socket);
+                    } else {
+                        Confirmation('Kill \'' + player.name + '\'?', () => {
                             socket.emit(SOCKET_EVENTS.IN_GAME_MESSAGE, EVENT_IDS.KILL_PLAYER, accessCode, { personId: player.id });
-                        }
-                    });
+                        });
+                    }
                 };
                 playerEl.querySelector('.kill-player-button').addEventListener('click', killPlayerHandlers[player.id]);
             }
@@ -579,6 +587,112 @@ function createEndGamePromptComponent (socket, stateBucket) {
         div.prepend(SharedStateUtil.createReturnToLobbyButton(stateBucket));
         document.getElementById('game-content').appendChild(div);
     }
+}
+
+function insertResetTimerButton (gameState, socket) {
+    if (!gameState.timerParams || document.getElementById('reset-timer-button')) {
+        return;
+    }
+
+    const timerContainer = document.getElementById('timer-container-moderator');
+    if (!timerContainer) {
+        return;
+    }
+
+    const resetTimerButton = document.createElement('button');
+    resetTimerButton.id = 'reset-timer-button';
+    resetTimerButton.classList.add('app-button');
+    resetTimerButton.innerText = 'Reset Timer';
+    resetTimerButton.addEventListener('click', () => {
+        Confirmation('Reset the timer to the full duration and start it?', () => {
+            toast('Resetting timer...', 'neutral', true, false);
+            socket.emit(
+                SOCKET_EVENTS.IN_GAME_MESSAGE,
+                EVENT_IDS.RESET_TIMER,
+                gameState.accessCode
+            );
+        });
+    });
+    timerContainer.appendChild(resetTimerButton);
+}
+
+function insertModeratorControlButton (gameState, socket) {
+    const moderatorControlPrompt = document.getElementById('moderator-control-prompt');
+    if (!SharedStateUtil.clientIsOriginalModerator(gameState)) {
+        document.getElementById('moderator-control-button')?.remove();
+        if (moderatorControlPrompt) {
+            moderatorControlPrompt.innerHTML = '';
+        }
+        return;
+    }
+
+    SharedStateUtil.ensureModeratorControlModal();
+    const existingTransferButton = document.getElementById('mod-transfer-button');
+    existingTransferButton?.remove();
+
+    if (document.getElementById('moderator-control-button')) {
+        return;
+    }
+
+    const gameHeader = document.getElementById('game-header');
+    if (!gameHeader) {
+        return;
+    }
+
+    const moderatorControlButton = document.createElement('button');
+    moderatorControlButton.id = 'moderator-control-button';
+    moderatorControlButton.classList.add('app-button');
+    moderatorControlButton.innerText = 'Moderator Controls';
+    moderatorControlButton.addEventListener('click', () => {
+        SharedStateUtil.openModeratorControlModal(gameState, socket);
+    });
+
+    const roleInfoContainer = gameHeader.querySelector('div:last-child');
+    if (roleInfoContainer) {
+        gameHeader.insertBefore(moderatorControlButton, roleInfoContainer);
+    } else {
+        gameHeader.appendChild(moderatorControlButton);
+    }
+}
+
+function displayTempModeratorKillChoice (player, accessCode, socket) {
+    document.querySelector('#player-options-modal-title').innerText = `Kill ${player.name}`;
+    const modalContent = document.getElementById('player-options-modal-content');
+    modalContent.innerHTML = '';
+
+    const justKillOption = document.createElement('button');
+    justKillOption.setAttribute('class', 'player-option');
+    justKillOption.innerText = 'Just Kill';
+    justKillOption.addEventListener('click', () => {
+        ModalManager.dispelModal('player-options-modal', 'player-options-modal-background');
+        socket.emit(
+            SOCKET_EVENTS.IN_GAME_MESSAGE,
+            EVENT_IDS.KILL_PLAYER,
+            accessCode,
+            { personId: player.id }
+        );
+    });
+
+    const dedicatedModOption = document.createElement('button');
+    dedicatedModOption.setAttribute('class', 'player-option');
+    dedicatedModOption.innerText = 'Kill + Make Dedicated Mod';
+    dedicatedModOption.addEventListener('click', () => {
+        ModalManager.dispelModal('player-options-modal', 'player-options-modal-background');
+        socket.emit(
+            SOCKET_EVENTS.IN_GAME_MESSAGE,
+            EVENT_IDS.ASSIGN_DEDICATED_MOD,
+            accessCode,
+            { personId: player.id }
+        );
+    });
+
+    modalContent.appendChild(justKillOption);
+    modalContent.appendChild(dedicatedModOption);
+    ModalManager.displayModal(
+        'player-options-modal',
+        'player-options-modal-background',
+        'close-player-options-modal-button'
+    );
 }
 
 function insertPlaceholderButton (container, append, type) {

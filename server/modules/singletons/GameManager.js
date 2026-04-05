@@ -108,42 +108,7 @@ class GameManager {
 
     runTimer = async (game) => {
         this.logger.debug('running timer for game ' + game.accessCode);
-        const timer = new ServerTimer(
-            game.timerParams.hours,
-            game.timerParams.minutes,
-            PRIMITIVES.CLOCK_TICK_INTERVAL_MILLIS,
-            this.logger
-        );
-        this.timers[game.accessCode] = timer;
-        
-        timer.runTimer(true).then(async () => {
-            this.logger.debug('Timer finished for ' + game.accessCode);
-            game = await this.getActiveGame(game.accessCode);
-            if (game) {
-                await this.eventManager.handleEventById(
-                    EVENT_IDS.END_TIMER,
-                    null,
-                    game,
-                    null,
-                    game.accessCode,
-                    {},
-                    null,
-                    false
-                );
-                await this.refreshGame(game);
-                await this.eventManager.publisher.publish(
-                    REDIS_CHANNELS.ACTIVE_GAME_STREAM,
-                    this.eventManager.createMessageToPublish(
-                        game.accessCode,
-                        EVENT_IDS.END_TIMER,
-                        this.instanceId,
-                        '{}'
-                    )
-                );
-            }
-            delete this.timers[game.accessCode];
-        });
-        game.startTime = new Date().toJSON();
+        this.startServerTimer(game, true);
     };
 
     pauseTimer = async (game) => {
@@ -164,6 +129,23 @@ class GameManager {
             return timer.currentTimeInMillis;
         }
         return null;
+    };
+
+    resetTimer = async (game) => {
+        if (!game.timerParams) {
+            return null;
+        }
+
+        const existingTimer = this.timers[game.accessCode];
+        if (existingTimer) {
+            existingTimer.stopTimer();
+            delete this.timers[game.accessCode];
+        }
+
+        game.timerParams.ended = false;
+        game.timerParams.paused = false;
+        const timer = this.startServerTimer(game, false);
+        return timer.currentTimeInMillis;
     };
 
     checkAvailability = async (code) => {
@@ -356,6 +338,46 @@ class GameManager {
     isNameTaken (game, name) {
         const processedName = name.toLowerCase().trim();
         return game.people.find((person) => person.name.toLowerCase().trim() === processedName);
+    }
+
+    startServerTimer (game, pausedInitially) {
+        const timer = new ServerTimer(
+            game.timerParams.hours,
+            game.timerParams.minutes,
+            PRIMITIVES.CLOCK_TICK_INTERVAL_MILLIS,
+            this.logger
+        );
+        this.timers[game.accessCode] = timer;
+
+        timer.runTimer(pausedInitially).then(async () => {
+            this.logger.debug('Timer finished for ' + game.accessCode);
+            game = await this.getActiveGame(game.accessCode);
+            if (game) {
+                await this.eventManager.handleEventById(
+                    EVENT_IDS.END_TIMER,
+                    null,
+                    game,
+                    null,
+                    game.accessCode,
+                    {},
+                    null,
+                    false
+                );
+                await this.refreshGame(game);
+                await this.eventManager.publisher.publish(
+                    REDIS_CHANNELS.ACTIVE_GAME_STREAM,
+                    this.eventManager.createMessageToPublish(
+                        game.accessCode,
+                        EVENT_IDS.END_TIMER,
+                        this.instanceId,
+                        '{}'
+                    )
+                );
+            }
+            delete this.timers[game.accessCode];
+        });
+        game.startTime = new Date().toJSON();
+        return timer;
     }
 }
 

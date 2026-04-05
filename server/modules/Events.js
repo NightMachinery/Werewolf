@@ -54,6 +54,31 @@ async function handleTimerCommand (timerEventSubtype, game, socketId, vars) {
                 );
             }
             break;
+        case GAME_PROCESS_COMMANDS.RESET_TIMER:
+            const resetTimeRemaining = await vars.gameManager.resetTimer(game);
+            if (resetTimeRemaining !== null) {
+                await vars.eventManager.handleEventById(
+                    EVENT_IDS.RESET_TIMER,
+                    null,
+                    game,
+                    null,
+                    game.accessCode,
+                    { timeRemaining: resetTimeRemaining },
+                    null,
+                    false
+                );
+                await vars.gameManager.refreshGame(game);
+                await vars.eventManager.publisher.publish(
+                    REDIS_CHANNELS.ACTIVE_GAME_STREAM,
+                    vars.eventManager.createMessageToPublish(
+                        game.accessCode,
+                        EVENT_IDS.RESET_TIMER,
+                        vars.instanceId,
+                        JSON.stringify({ timeRemaining: resetTimeRemaining })
+                    )
+                );
+            }
+            break;
         case GAME_PROCESS_COMMANDS.GET_TIME_REMAINING:
             if (game.timerParams && game.timerParams.ended) {
                 const socket = vars.gameManager.namespace.sockets.get(socketId);
@@ -91,6 +116,98 @@ async function handleTimerCommand (timerEventSubtype, game, socketId, vars) {
     }
 }
 
+function getRequestingPerson (game, vars) {
+    if (!vars.requestingSocketId) {
+        return null;
+    }
+
+    return game.people.find(person => person.socketId === vars.requestingSocketId) || null;
+}
+
+function isCurrentModerator (game, person) {
+    return Boolean(
+        person
+        && person.id === game.currentModeratorId
+        && (person.userType === USER_TYPES.MODERATOR || person.userType === USER_TYPES.TEMPORARY_MODERATOR)
+    );
+}
+
+function isDedicatedModerator (game, person) {
+    return Boolean(
+        person
+        && person.id === game.currentModeratorId
+        && person.userType === USER_TYPES.MODERATOR
+    );
+}
+
+function isOriginalModerator (game, person) {
+    return Boolean(person && person.id === game.originalModeratorId);
+}
+
+function blockIfUnauthorized (vars) {
+    vars.authorizationFailed = true;
+    return false;
+}
+
+function requireActiveModerator (game, vars) {
+    if (!vars.requestingSocketId) {
+        return vars.gameManager.findPersonByField(game, 'id', game.currentModeratorId);
+    }
+    const requester = getRequestingPerson(game, vars);
+    return isCurrentModerator(game, requester) ? requester : blockIfUnauthorized(vars);
+}
+
+function requireDedicatedModerator (game, vars) {
+    if (!vars.requestingSocketId) {
+        return vars.gameManager.findPersonByField(game, 'id', game.currentModeratorId);
+    }
+    const requester = getRequestingPerson(game, vars);
+    return isDedicatedModerator(game, requester) ? requester : blockIfUnauthorized(vars);
+}
+
+function requireOriginalModerator (game, vars) {
+    if (!vars.requestingSocketId) {
+        return vars.gameManager.findPersonByField(game, 'id', game.originalModeratorId);
+    }
+    const requester = getRequestingPerson(game, vars);
+    return isOriginalModerator(game, requester) ? requester : blockIfUnauthorized(vars);
+}
+
+function restoreModeratorToPriorRole (person) {
+    if (!person) {
+        return;
+    }
+
+    if (!person.gameRole) {
+        if (!person.out) {
+            person.userType = USER_TYPES.PLAYER;
+            person.out = false;
+            person.killed = false;
+            return;
+        }
+        person.userType = USER_TYPES.SPECTATOR;
+        person.out = true;
+        person.killed = false;
+        return;
+    }
+
+    if (person.out || person.killed) {
+        person.userType = USER_TYPES.KILLED_PLAYER;
+        person.out = true;
+        person.killed = true;
+        return;
+    }
+
+    person.userType = USER_TYPES.PLAYER;
+    person.out = false;
+    person.killed = false;
+}
+
+function assignModeratorRole (game, nextModerator) {
+    game.previousModeratorId = game.currentModeratorId;
+    game.currentModeratorId = nextModerator.id;
+}
+
 const Events = [
     {
         id: EVENT_IDS.PLAYER_JOINED,
@@ -109,6 +226,9 @@ const Events = [
     {
         id: EVENT_IDS.KICK_PERSON,
         stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars)) {
+                return;
+            }
             const toBeClearedIndex = game.people.findIndex(
                 (person) => person.id === socketArgs.personId && person.assigned === true
             );
@@ -118,6 +238,9 @@ const Events = [
             }
         },
         communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
             vars.gameManager.namespace.in(game.accessCode).emit(
                 EVENT_IDS.KICK_PERSON,
                 socketArgs.personId,
@@ -183,6 +306,9 @@ const Events = [
     {
         id: EVENT_IDS.UPDATE_GAME_ROLES,
         stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars)) {
+                return;
+            }
             if (GameCreationRequest.deckIsValid(socketArgs.deck)) {
                 game.deck = socketArgs.deck;
                 game.gameSize = socketArgs.deck.reduce(
@@ -193,6 +319,9 @@ const Events = [
             }
         },
         communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
             if (vars.ackFn) {
                 vars.ackFn();
             }
@@ -248,6 +377,9 @@ const Events = [
     {
         id: EVENT_IDS.START_GAME,
         stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars)) {
+                return;
+            }
             if (game.isStartable) {
                 game.status = STATUS.IN_PROGRESS;
                 vars.gameManager.deal(game);
@@ -258,6 +390,9 @@ const Events = [
             }
         },
         communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
             if (vars.ackFn) {
                 vars.ackFn();
             }
@@ -267,6 +402,9 @@ const Events = [
     {
         id: EVENT_IDS.KILL_PLAYER,
         stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars)) {
+                return;
+            }
             const person = game.people.find((person) => person.id === socketArgs.personId);
             if (person && !person.out) {
                 person.userType = person.userType === USER_TYPES.BOT
@@ -277,6 +415,9 @@ const Events = [
             }
         },
         communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
             const person = game.people.find((person) => person.id === socketArgs.personId);
             if (person) {
                 vars.gameManager.namespace.in(game.accessCode).emit(EVENT_IDS.KILL_PLAYER, person);
@@ -286,12 +427,18 @@ const Events = [
     {
         id: EVENT_IDS.REVEAL_PLAYER,
         stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars)) {
+                return;
+            }
             const person = game.people.find((person) => person.id === socketArgs.personId);
             if (person && !person.revealed) {
                 person.revealed = true;
             }
         },
         communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
             const person = game.people.find((person) => person.id === socketArgs.personId);
             if (person) {
                 vars.gameManager.namespace.in(game.accessCode).emit(
@@ -308,6 +455,9 @@ const Events = [
     {
         id: EVENT_IDS.END_GAME,
         stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars)) {
+                return;
+            }
             game.status = STATUS.ENDED;
             if (game.hasTimer && vars.gameManager.timers[game.accessCode]) {
                 vars.logger.trace('STOPPING TIMER FOR ENDED GAME ' + game.accessCode);
@@ -319,6 +469,9 @@ const Events = [
             }
         },
         communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
             vars.gameManager.namespace.in(game.accessCode)
                 .emit(EVENT_IDS.END_GAME, GameStateCurator.mapPeopleForModerator(game.people));
             if (vars.ackFn) {
@@ -329,22 +482,25 @@ const Events = [
     {
         id: EVENT_IDS.TRANSFER_MODERATOR,
         stateChange: async (game, socketArgs, vars) => {
+            if (!requireDedicatedModerator(game, vars)) {
+                return;
+            }
             const currentModerator = vars.gameManager.findPersonByField(game, 'id', game.currentModeratorId);
             const toTransferTo = vars.gameManager.findPersonByField(game, 'id', socketArgs.personId);
-            if (currentModerator) {
-                if (currentModerator.gameRole) {
-                    currentModerator.userType = USER_TYPES.KILLED_PLAYER;
-                } else {
-                    currentModerator.userType = USER_TYPES.SPECTATOR;
-                }
-                game.previousModeratorId = currentModerator.id;
-            }
-            if (toTransferTo) {
+            if (
+                currentModerator
+                && toTransferTo
+                && (toTransferTo.userType === USER_TYPES.KILLED_PLAYER || toTransferTo.userType === USER_TYPES.SPECTATOR)
+            ) {
+                restoreModeratorToPriorRole(currentModerator);
+                assignModeratorRole(game, toTransferTo);
                 toTransferTo.userType = USER_TYPES.MODERATOR;
-                game.currentModeratorId = toTransferTo.id;
             }
         },
         communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
             if (vars.ackFn) {
                 vars.ackFn();
             }
@@ -354,21 +510,26 @@ const Events = [
     {
         id: EVENT_IDS.ASSIGN_DEDICATED_MOD,
         stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars)) {
+                return;
+            }
             const currentModerator = vars.gameManager.findPersonByField(game, 'id', game.currentModeratorId);
             const toTransferTo = vars.gameManager.findPersonByField(game, 'id', socketArgs.personId);
-            if (currentModerator && toTransferTo) {
+            if (currentModerator && toTransferTo && !toTransferTo.out && toTransferTo.userType !== USER_TYPES.BOT) {
                 if (currentModerator.id !== toTransferTo.id) {
-                    currentModerator.userType = USER_TYPES.PLAYER;
+                    restoreModeratorToPriorRole(currentModerator);
                 }
 
+                assignModeratorRole(game, toTransferTo);
                 toTransferTo.userType = USER_TYPES.MODERATOR;
                 toTransferTo.out = true;
                 toTransferTo.killed = true;
-                game.previousModeratorId = currentModerator.id;
-                game.currentModeratorId = toTransferTo.id;
             }
         },
         communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
             const moderator = vars.gameManager.findPersonByField(game, 'id', game.currentModeratorId);
             const moderatorSocket = vars.gameManager.namespace.sockets.get(moderator?.socketId);
             if (moderator && moderatorSocket) {
@@ -381,6 +542,71 @@ const Events = [
             if (previousModerator && previousModerator.id !== moderator.id && vars.gameManager.namespace.sockets.get(previousModerator.socketId)) {
                 vars.gameManager.namespace.to(previousModerator.socketId).emit(EVENT_IDS.SYNC_GAME_STATE);
             }
+        }
+    },
+    {
+        id: EVENT_IDS.SET_MODERATOR_STATUS,
+        stateChange: async (game, socketArgs, vars) => {
+            const creator = requireOriginalModerator(game, vars);
+            if (!creator) {
+                return;
+            }
+
+            const currentModerator = vars.gameManager.findPersonByField(game, 'id', game.currentModeratorId);
+            const target = vars.gameManager.findPersonByField(game, 'id', socketArgs.personId);
+
+            if (!currentModerator || !target) {
+                return;
+            }
+
+            switch (socketArgs.mode) {
+                case 'temp':
+                    if (target.out || target.userType === USER_TYPES.BOT || target.userType === USER_TYPES.KILLED_BOT) {
+                        return;
+                    }
+                    restoreModeratorToPriorRole(currentModerator);
+                    assignModeratorRole(game, target);
+                    target.userType = USER_TYPES.TEMPORARY_MODERATOR;
+                    target.out = false;
+                    target.killed = false;
+                    break;
+                case 'dedicated':
+                    if (
+                        target.userType !== USER_TYPES.KILLED_PLAYER
+                        && target.userType !== USER_TYPES.SPECTATOR
+                    ) {
+                        return;
+                    }
+                    restoreModeratorToPriorRole(currentModerator);
+                    assignModeratorRole(game, target);
+                    target.userType = USER_TYPES.MODERATOR;
+                    target.out = true;
+                    break;
+                case 'demote':
+                    if (target.id !== game.currentModeratorId || target.id === creator.id) {
+                        return;
+                    }
+                    restoreModeratorToPriorRole(target);
+                    assignModeratorRole(game, creator);
+                    creator.userType = creator.out || creator.killed
+                        ? USER_TYPES.MODERATOR
+                        : USER_TYPES.TEMPORARY_MODERATOR;
+                    if (creator.userType === USER_TYPES.MODERATOR) {
+                        creator.out = true;
+                    } else {
+                        creator.out = false;
+                        creator.killed = false;
+                    }
+                    break;
+                default:
+                    break;
+            }
+        },
+        communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
+            vars.gameManager.namespace.to(game.accessCode).emit(EVENT_IDS.SYNC_GAME_STATE);
         }
     },
     {
@@ -404,6 +630,11 @@ const Events = [
         id: EVENT_IDS.TIMER_EVENT,
         stateChange: async (game, socketArgs, vars) => {},
         communicate: async (game, socketArgs, vars) => {
+            if (vars.timerEventSubtype !== GAME_PROCESS_COMMANDS.GET_TIME_REMAINING
+                && !requireActiveModerator(game, vars)
+            ) {
+                return;
+            }
             await handleTimerCommand(vars.timerEventSubtype, game, vars.requestingSocketId, vars);
         }
     },
@@ -439,12 +670,18 @@ const Events = [
     {
         id: EVENT_IDS.UPDATE_GAME_TIMER,
         stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars)) {
+                return;
+            }
             if (GameCreationRequest.timerParamsAreValid(socketArgs.hasTimer, socketArgs.timerParams)) {
                 game.hasTimer = socketArgs.hasTimer;
                 game.timerParams = socketArgs.timerParams;
             }
         },
         communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
             if (vars.ackFn) {
                 vars.ackFn();
             }
@@ -484,6 +721,17 @@ const Events = [
         },
         communicate: async (game, socketArgs, vars) => {
             vars.gameManager.namespace.in(game.accessCode).emit(GAME_PROCESS_COMMANDS.RESUME_TIMER, socketArgs.timeRemaining);
+        }
+    },
+    {
+        id: EVENT_IDS.RESET_TIMER,
+        stateChange: async (game, socketArgs, vars) => {
+            game.timerParams.paused = false;
+            game.timerParams.ended = false;
+            game.timerParams.timeRemaining = socketArgs.timeRemaining;
+        },
+        communicate: async (game, socketArgs, vars) => {
+            vars.gameManager.namespace.in(game.accessCode).emit(GAME_PROCESS_COMMANDS.RESET_TIMER, socketArgs.timeRemaining);
         }
     },
     {

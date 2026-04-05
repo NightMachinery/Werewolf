@@ -28,9 +28,9 @@ describe('Events', () => {
             'ABCD',
             STATUS.LOBBY,
             [
-                { id: 'a', assigned: true, out: true, killed: false, userType: USER_TYPES.MODERATOR },
-                { id: 'b', gameRole: 'Villager', alignment: 'good', assigned: true, out: false, killed: false, userType: USER_TYPES.PLAYER },
-                { id: 'c', assigned: true, out: true, killed: false, userType: USER_TYPES.SPECTATOR }
+                { id: 'a', socketId: 'moderator-socket', assigned: true, out: true, killed: false, userType: USER_TYPES.MODERATOR },
+                { id: 'b', socketId: 'player-socket', gameRole: 'Villager', alignment: 'good', assigned: true, out: false, killed: false, userType: USER_TYPES.PLAYER },
+                { id: 'c', socketId: 'spectator-socket', assigned: true, out: true, killed: false, userType: USER_TYPES.SPECTATOR }
             ],
             [{ quantity: 1 }, { quantity: 1 }],
             false,
@@ -444,9 +444,9 @@ describe('Events', () => {
     describe(EVENT_IDS.ASSIGN_DEDICATED_MOD, () => {
         beforeEach(() => {
             game.people = [
-                { id: 'a', gameRole: 'Villager', alignment: 'good', assigned: true, out: false, killed: false, userType: USER_TYPES.TEMPORARY_MODERATOR },
-                { id: 'b', gameRole: 'Villager', alignment: 'good', assigned: true, out: false, killed: false, userType: USER_TYPES.PLAYER },
-                { id: 'c', assigned: true, out: true, killed: false, userType: USER_TYPES.SPECTATOR }
+                { id: 'a', socketId: 'moderator-socket', gameRole: 'Villager', alignment: 'good', assigned: true, out: false, killed: false, userType: USER_TYPES.TEMPORARY_MODERATOR },
+                { id: 'b', socketId: 'player-socket', gameRole: 'Villager', alignment: 'good', assigned: true, out: false, killed: false, userType: USER_TYPES.PLAYER },
+                { id: 'c', socketId: 'spectator-socket', assigned: true, out: true, killed: false, userType: USER_TYPES.SPECTATOR }
             ];
         });
         describe('stateChange', () => {
@@ -527,6 +527,70 @@ describe('Events', () => {
         });
     });
 
+    describe(EVENT_IDS.SET_MODERATOR_STATUS, () => {
+        describe('stateChange', () => {
+            it('should let the creator promote a living player to temp mod', async () => {
+                game.people.find(p => p.id === 'a').userType = USER_TYPES.SPECTATOR;
+                await Events.find((e) => e.id === EVENT_IDS.SET_MODERATOR_STATUS)
+                    .stateChange(
+                        game,
+                        { personId: 'b', mode: 'temp' },
+                        { gameManager: gameManager, requestingSocketId: 'moderator-socket' }
+                    );
+
+                expect(game.currentModeratorId).toEqual('b');
+                expect(game.people.find(p => p.id === 'a').userType).toEqual(USER_TYPES.SPECTATOR);
+                expect(game.people.find(p => p.id === 'b').userType).toEqual(USER_TYPES.TEMPORARY_MODERATOR);
+            });
+
+            it('should let the creator promote a killed player to dedicated mod', async () => {
+                await Events.find((e) => e.id === EVENT_IDS.KILL_PLAYER)
+                    .stateChange(game, { personId: 'b' }, { gameManager: gameManager });
+                await Events.find((e) => e.id === EVENT_IDS.SET_MODERATOR_STATUS)
+                    .stateChange(
+                        game,
+                        { personId: 'b', mode: 'dedicated' },
+                        { gameManager: gameManager, requestingSocketId: 'moderator-socket' }
+                    );
+
+                expect(game.currentModeratorId).toEqual('b');
+                expect(game.people.find(p => p.id === 'b').userType).toEqual(USER_TYPES.MODERATOR);
+                expect(game.people.find(p => p.id === 'b').killed).toBeTrue();
+            });
+
+            it('should let the creator demote the current moderator back to themself', async () => {
+                game.people.find(p => p.id === 'a').userType = USER_TYPES.PLAYER;
+                game.people.find(p => p.id === 'a').out = false;
+                game.people.find(p => p.id === 'a').gameRole = 'Villager';
+                game.people.find(p => p.id === 'b').userType = USER_TYPES.TEMPORARY_MODERATOR;
+                game.currentModeratorId = 'b';
+
+                await Events.find((e) => e.id === EVENT_IDS.SET_MODERATOR_STATUS)
+                    .stateChange(
+                        game,
+                        { personId: 'b', mode: 'demote' },
+                        { gameManager: gameManager, requestingSocketId: 'moderator-socket' }
+                    );
+
+                expect(game.currentModeratorId).toEqual('a');
+                expect(game.people.find(p => p.id === 'a').userType).toEqual(USER_TYPES.TEMPORARY_MODERATOR);
+                expect(game.people.find(p => p.id === 'b').userType).toEqual(USER_TYPES.PLAYER);
+            });
+
+            it('should not let a non-creator change moderator status', async () => {
+                await Events.find((e) => e.id === EVENT_IDS.SET_MODERATOR_STATUS)
+                    .stateChange(
+                        game,
+                        { personId: 'b', mode: 'temp' },
+                        { gameManager: gameManager, requestingSocketId: 'player-socket' }
+                    );
+
+                expect(game.currentModeratorId).toEqual('a');
+                expect(game.people.find(p => p.id === 'b').userType).toEqual(USER_TYPES.PLAYER);
+            });
+        });
+    });
+
     describe(EVENT_IDS.RESTART_GAME, () => {
         describe('stateChange', () => {
             it('should kill any alive timer thread if the instance is home to it', async () => {
@@ -567,6 +631,33 @@ describe('Events', () => {
         });
     });
 
+    describe(EVENT_IDS.RESET_TIMER, () => {
+        beforeEach(() => {
+            game.timerParams = { hours: 1, minutes: 0, paused: true, ended: true, timeRemaining: 0 };
+        });
+
+        describe('stateChange', () => {
+            it('should mark the timer as running again from the supplied time', async () => {
+                await Events.find((e) => e.id === EVENT_IDS.RESET_TIMER)
+                    .stateChange(game, { timeRemaining: 3600000 }, { gameManager: gameManager });
+
+                expect(game.timerParams.paused).toBeFalse();
+                expect(game.timerParams.ended).toBeFalse();
+                expect(game.timerParams.timeRemaining).toEqual(3600000);
+            });
+        });
+
+        describe('communicate', () => {
+            it('should broadcast the reset timer event to the room', async () => {
+                await Events.find((e) => e.id === EVENT_IDS.RESET_TIMER)
+                    .communicate(game, { timeRemaining: 3600000 }, { gameManager: gameManager });
+
+                expect(namespace.in).toHaveBeenCalledWith(game.accessCode);
+                expect(namespace.in().emit).toHaveBeenCalledWith(EVENT_IDS.RESET_TIMER, 3600000);
+            });
+        });
+    });
+
     describe(EVENT_IDS.TIMER_EVENT, () => {
         describe('communicate', () => {
             it('should publish an event to source timer data if the timer thread is not found', async () => {
@@ -595,6 +686,22 @@ describe('Events', () => {
                         instanceId: 'test'
                     });
                 expect(namespace.to).toHaveBeenCalledWith('2');
+            });
+            it('should not reset the timer when a non-moderator requests it', async () => {
+                game.timerParams = { hours: 1, minutes: 0, paused: true, timeRemaining: 3600000 };
+                spyOn(gameManager, 'resetTimer').and.callThrough();
+
+                await Events.find((e) => e.id === EVENT_IDS.TIMER_EVENT)
+                    .communicate(game, {}, {
+                        gameManager: gameManager,
+                        eventManager: eventManager,
+                        timerEventSubtype: GAME_PROCESS_COMMANDS.RESET_TIMER,
+                        requestingSocketId: 'player-socket',
+                        logger: { logLevel: 'trace' },
+                        instanceId: 'test'
+                    });
+
+                expect(gameManager.resetTimer).not.toHaveBeenCalled();
             });
         });
     });

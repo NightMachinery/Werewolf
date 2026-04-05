@@ -225,6 +225,24 @@ export class Lobby {
         gameCode.innerHTML = 'Or enter this code on the homepage: <span>' +
             this.stateBucket.currentGameState.accessCode + '</span>';
 
+        const moderatorControlPrompt = document.getElementById('moderator-control-prompt');
+        if (SharedStateUtil.clientIsOriginalModerator(this.stateBucket.currentGameState)) {
+            SharedStateUtil.ensureModeratorControlModal();
+            const buttonContainer = this.container.querySelector('#lobby-header > div:last-child');
+            if (buttonContainer && !document.getElementById('moderator-control-button')) {
+                const moderatorControlButton = document.createElement('button');
+                moderatorControlButton.id = 'moderator-control-button';
+                moderatorControlButton.classList.add('app-button');
+                moderatorControlButton.innerText = 'Moderator Controls';
+                moderatorControlButton.addEventListener('click', () => {
+                    SharedStateUtil.openModeratorControlModal(this.stateBucket.currentGameState, this.socket);
+                });
+                buttonContainer.prepend(moderatorControlButton);
+            }
+        } else if (moderatorControlPrompt) {
+            moderatorControlPrompt.innerHTML = '';
+        }
+
         QRCode.toCanvas(document.getElementById('canvas'), link, { scale: 3 }, function (error) {
             if (error) console.error(error);
         });

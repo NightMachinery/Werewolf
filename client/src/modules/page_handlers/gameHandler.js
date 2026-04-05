@@ -149,6 +149,9 @@ function processGameState (
     }
 
     SharedStateUtil.displayClientInfo(currentGameState, socket);
+    if (currentGameState.status === STATUS.ENDED || !SharedStateUtil.clientIsOriginalModerator(currentGameState)) {
+        document.getElementById('moderator-control-prompt').innerHTML = '';
+    }
 
     switch (currentGameState.status) {
         case STATUS.LOBBY:

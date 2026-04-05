@@ -63,6 +63,15 @@ describe('GameManager', () => {
             expect(game.isStartable).toEqual(true);
             expect(game.people.filter(p => p.userType === USER_TYPES.SPECTATOR).length).toEqual(1);
         });
+
+        it('should reject the 101st spectator', async () => {
+            for (let i = 0; i < globals.PRIMITIVES.MAX_SPECTATORS; i ++) {
+                game.people.push({ id: 's' + i, name: 'spec' + i, assigned: true, out: true, userType: USER_TYPES.SPECTATOR });
+            }
+
+            await expectAsync(gameManager.joinGame(game, 'TooMany', 'cookie', true))
+                .toBeRejectedWith(jasmine.objectContaining({ status: 400 }));
+        });
     });
 
     describe('#restartGame', () => {

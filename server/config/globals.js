@@ -13,7 +13,7 @@ const PRIMITIVES = {
     STALE_GAME_SECONDS: 86400,
     USER_SIGNATURE_LENGTH: 25,
     INSTANCE_ID_LENGTH: 75,
-    MAX_SPECTATORS: 25,
+    MAX_SPECTATORS: 100,
     MOCK_AUTH: 'mock_auth',
     MAX_PERSON_NAME_LENGTH: 40
 };
@@ -65,12 +65,14 @@ const EVENT_IDS = {
     START_GAME: 'startGame',
     PAUSE_TIMER: 'pauseTimer',
     RESUME_TIMER: 'resumeTimer',
+    RESET_TIMER: 'resetTimer',
     END_TIMER: 'endTimer',
     GET_TIME_REMAINING: 'getTimeRemaining',
     SOURCE_TIMER_EVENT: 'sourceTimerEvent',
     KILL_PLAYER: 'killPlayer',
     REVEAL_PLAYER: 'revealPlayer',
     TRANSFER_MODERATOR: 'transferModerator',
+    SET_MODERATOR_STATUS: 'setModeratorStatus',
     CHANGE_NAME: 'changeName',
     END_GAME: 'endGame',
     RESTART_GAME: 'restartGame',
@@ -104,6 +106,7 @@ const SYNCABLE_EVENTS = function () {
         EVENT_IDS.UPDATE_SOCKET,
         EVENT_IDS.FETCH_GAME_STATE,
         EVENT_IDS.ASSIGN_DEDICATED_MOD,
+        EVENT_IDS.SET_MODERATOR_STATUS,
         EVENT_IDS.RESUME_TIMER,
         EVENT_IDS.PAUSE_TIMER,
         EVENT_IDS.END_TIMER,
@@ -117,6 +120,7 @@ const SYNCABLE_EVENTS = function () {
 const TIMER_EVENTS = function () {
     return [
         EVENT_IDS.RESUME_TIMER,
+        EVENT_IDS.RESET_TIMER,
         EVENT_IDS.PAUSE_TIMER,
         EVENT_IDS.END_TIMER,
         EVENT_IDS.GET_TIME_REMAINING
@@ -160,6 +164,7 @@ const GAME_PROCESS_COMMANDS = {
     START_TIMER: 'startTimer',
     PAUSE_TIMER: 'pauseTimer',
     RESUME_TIMER: 'resumeTimer',
+    RESET_TIMER: 'resetTimer',
     GET_TIME_REMAINING: 'getTimeRemaining'
 };
 

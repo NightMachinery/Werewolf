@@ -112,6 +112,10 @@ export class GameTimerManager {
             this.resumeGameTimer(timeRemaining, PRIMITIVES.CLOCK_TICK_INTERVAL_MILLIS, null, timerWorker);
         });
 
+        socket.on(EVENT_IDS.RESET_TIMER, (timeRemaining) => {
+            this.resumeGameTimer(timeRemaining, PRIMITIVES.CLOCK_TICK_INTERVAL_MILLIS, null, timerWorker);
+        });
+
         socket.once(EVENT_IDS.GET_TIME_REMAINING, (timeRemaining, paused) => {
             if (paused) {
                 this.displayPausedTime(timeRemaining);

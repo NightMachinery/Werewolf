@@ -3,6 +3,7 @@ export const mockGames = {
         accessCode: 'TVV6',
         status: 'lobby',
         currentModeratorId: 'w8qarnG6FgAZQvRYsAFefldwU2r6KIeOce3nGaLxnfMlKIBOLj0DhUSC951bQ7yLwbRjDAS72r4',
+        originalModeratorId: 'w8qarnG6FgAZQvRYsAFefldwU2r6KIeOce3nGaLxnfMlKIBOLj0DhUSC951bQ7yLwbRjDAS72r4',
         client: {
             name: 'Alec',
             hasEnteredName: false,
@@ -52,6 +53,7 @@ export const mockGames = {
         accessCode: 'TVV6',
         status: 'lobby',
         currentModeratorId: 'w8qarnG6FgAZQvRYsAFefldwU2r6KIeOce3nGaLxnfMlKIBOLj0DhUSC951bQ7yLwbRjDAS72r4',
+        originalModeratorId: 'w8qarnG6FgAZQvRYsAFefldwU2r6KIeOce3nGaLxnfMlKIBOLj0DhUSC951bQ7yLwbRjDAS72r4',
         client: {
             name: 'Lys',
             hasEnteredName: false,
@@ -109,6 +111,7 @@ export const mockGames = {
         accessCode: 'TVV6',
         status: 'in progress',
         currentModeratorId: 'w8qarnG6FgAZQvRYsAFefldwU2r6KIeOce3nGaLxnfMlKIBOLj0DhUSC951bQ7yLwbRjDAS72r4',
+        originalModeratorId: 'w8qarnG6FgAZQvRYsAFefldwU2r6KIeOce3nGaLxnfMlKIBOLj0DhUSC951bQ7yLwbRjDAS72r4',
         client: {
             name: 'Andrea',
             hasEnteredName: false,
@@ -227,6 +230,7 @@ export const mockGames = {
             accessCode: 'TVV6',
             status: 'in progress',
             currentModeratorId: 'w8qarnG6FgAZQvRYsAFefldwU2r6KIeOce3nGaLxnfMlKIBOLj0DhUSC951bQ7yLwbRjDAS72r4',
+            originalModeratorId: 'pTtVXDJaxtXcrlbG8B43Wom67snoeO24RNEkO6eB2BaIftTdvpnfe1QR65DVj9A6I3VOoKZkYQW',
             client: {
                 name: 'Alec',
                 hasEnteredName: false,

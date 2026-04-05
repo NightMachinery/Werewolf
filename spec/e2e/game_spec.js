@@ -260,6 +260,10 @@ describe('game page', () => {
             expect(document.getElementById('play-pause').firstElementChild.getAttribute('src')).toEqual('../images/play-button.svg');
         });
 
+        it('should display the reset timer button', () => {
+            expect(document.getElementById('reset-timer-button')).not.toBeNull();
+        });
+
         it('should display players by their alignment', () => {
             expect(document.querySelector('.evil-players')).not.toBeNull();
             expect(document.querySelector('.good-players')).not.toBeNull();
@@ -383,8 +387,132 @@ describe('game page', () => {
             expect(document.getElementById('return-to-lobby-button')).not.toBeNull();
         });
 
+        it('should emit reset timer and update the timer UI when the room receives the reset event', async () => {
+            document.getElementById('reset-timer-button').click();
+            document.getElementById('confirmation-yes-button').click();
+
+            expect(mockSocket.emit).toHaveBeenCalledWith(
+                SOCKET_EVENTS.IN_GAME_MESSAGE,
+                EVENT_IDS.RESET_TIMER,
+                mockGames.moderatorGame.accessCode
+            );
+
+            await mockSocket.eventHandlers.resetTimer(600000);
+            expect(document.getElementById('game-timer').innerText).toEqual('00:10:00');
+            expect(document.getElementById('play-pause').firstElementChild.getAttribute('src')).toEqual('../images/pause-button.svg');
+        });
+
         afterAll(() => {
             document.body.innerHTML = '';
+        });
+    });
+
+    describe('in-progress game - temporary moderator view', () => {
+        beforeEach(async () => {
+            const tempModGame = deepCopy(mockGames.moderatorGame);
+            tempModGame.currentModeratorId = tempModGame.client.id;
+            tempModGame.originalModeratorId = tempModGame.client.id;
+            tempModGame.client.userType = USER_TYPES.TEMPORARY_MODERATOR;
+            tempModGame.client.gameRole = 'Villager';
+            tempModGame.client.gameRoleDescription = 'During the day, find the wolves and kill them.';
+            tempModGame.client.alignment = 'good';
+            tempModGame.client.out = false;
+            const currentModerator = tempModGame.people.find(person => person.id === tempModGame.client.id);
+            currentModerator.userType = USER_TYPES.TEMPORARY_MODERATOR;
+            currentModerator.gameRole = 'Villager';
+            currentModerator.gameRoleDescription = 'During the day, find the wolves and kill them.';
+            currentModerator.alignment = 'good';
+            currentModerator.out = false;
+
+            mockSocket.emit = function (eventName, ...args) {
+                switch (args[0]) {
+                    case EVENT_IDS.FETCH_GAME_STATE:
+                        args[args.length - 1](tempModGame);
+                        break;
+                    default:
+                        break;
+                }
+            };
+            spyOn(mockSocket, 'emit').and.callThrough();
+            await gameHandler(mockSocket, window, gameTemplate);
+            mockSocket.eventHandlers.connect();
+            await mockSocket.eventHandlers.getTimeRemaining(120000, true);
+        });
+
+        it('should show the temp-mod kill choice and emit kill-player when Just Kill is selected', () => {
+            document.querySelector('div[data-pointer="pTtVXDJaxtXcrlbG8B43Wom67snoeO24RNEkO6eB2BaIftTdvpnfe1QR65DVj9A6I3VOoKZkYQW"]')
+                .querySelector('.kill-player-button').click();
+
+            expect(document.getElementById('player-options-modal').style.display).toEqual('flex');
+            document.querySelectorAll('#player-options-modal-content .player-option')[0].click();
+
+            expect(mockSocket.emit).toHaveBeenCalledWith(
+                SOCKET_EVENTS.IN_GAME_MESSAGE,
+                EVENT_IDS.KILL_PLAYER,
+                'TVV6',
+                { personId: 'pTtVXDJaxtXcrlbG8B43Wom67snoeO24RNEkO6eB2BaIftTdvpnfe1QR65DVj9A6I3VOoKZkYQW' }
+            );
+        });
+
+        it('should emit assign-dedicated-mod when Kill + Make Dedicated Mod is selected', () => {
+            document.querySelector('div[data-pointer="pTtVXDJaxtXcrlbG8B43Wom67snoeO24RNEkO6eB2BaIftTdvpnfe1QR65DVj9A6I3VOoKZkYQW"]')
+                .querySelector('.kill-player-button').click();
+
+            document.querySelectorAll('#player-options-modal-content .player-option')[1].click();
+
+            expect(mockSocket.emit).toHaveBeenCalledWith(
+                SOCKET_EVENTS.IN_GAME_MESSAGE,
+                EVENT_IDS.ASSIGN_DEDICATED_MOD,
+                'TVV6',
+                { personId: 'pTtVXDJaxtXcrlbG8B43Wom67snoeO24RNEkO6eB2BaIftTdvpnfe1QR65DVj9A6I3VOoKZkYQW' }
+            );
+        });
+    });
+
+    describe('creator moderator controls', () => {
+        it('should display moderator controls in the lobby when the creator is not the current moderator', async () => {
+            const creatorLobbyGame = deepCopy(mockGames.gameInLobbyAsPlayer);
+            creatorLobbyGame.originalModeratorId = creatorLobbyGame.client.id;
+
+            mockSocket.emit = function (eventName, ...args) {
+                if (args[0] === EVENT_IDS.FETCH_GAME_STATE) {
+                    args[args.length - 1](creatorLobbyGame);
+                }
+            };
+            spyOn(mockSocket, 'emit').and.callThrough();
+            await gameHandler(mockSocket, window, gameTemplate);
+            mockSocket.eventHandlers.connect();
+
+            expect(document.getElementById('moderator-control-button')).not.toBeNull();
+        });
+
+        it('should display moderator controls in-progress when the creator is not the current moderator', async () => {
+            const creatorInProgressGame = deepCopy(mockGames.moderatorGame);
+            const creatorPerson = creatorInProgressGame.people.find(person => person.id === creatorInProgressGame.originalModeratorId);
+            creatorInProgressGame.client = {
+                name: creatorPerson.name,
+                hasEnteredName: false,
+                id: creatorPerson.id,
+                cookie: 'creator-cookie',
+                userType: USER_TYPES.PLAYER,
+                gameRole: creatorPerson.gameRole,
+                gameRoleDescription: creatorPerson.gameRoleDescription,
+                alignment: creatorPerson.alignment,
+                out: creatorPerson.out,
+                killed: creatorPerson.killed
+            };
+
+            mockSocket.emit = function (eventName, ...args) {
+                if (args[0] === EVENT_IDS.FETCH_GAME_STATE) {
+                    args[args.length - 1](creatorInProgressGame);
+                }
+            };
+            spyOn(mockSocket, 'emit').and.callThrough();
+            await gameHandler(mockSocket, window, gameTemplate);
+            mockSocket.eventHandlers.connect();
+            await mockSocket.eventHandlers.getTimeRemaining(120000, true);
+
+            expect(document.getElementById('moderator-control-button')).not.toBeNull();
         });
     });
 });

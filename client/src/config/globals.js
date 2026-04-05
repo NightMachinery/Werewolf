@@ -38,6 +38,7 @@ export const USER_TYPES = {
     PLAYER: 'player',
     TEMPORARY_MODERATOR: 'temp mod',
     KILLED_PLAYER: 'killed',
+    KILLED_BOT: 'killed bot',
     SPECTATOR: 'spectator',
     BOT: 'bot'
 };
@@ -53,6 +54,7 @@ export const USER_TYPE_ICONS = {
     'temp mod': ' \uD83C\uDFAE\uD83D\uDC51',
     spectator: ' \uD83D\uDC7B',
     killed: ' \uD83D\uDC80',
+    'killed bot': ' \uD83E\uDD16',
     bot: ' \uD83E\uDD16'
 };
 
@@ -61,11 +63,13 @@ export const EVENT_IDS = {
     START_GAME: 'startGame',
     PAUSE_TIMER: 'pauseTimer',
     RESUME_TIMER: 'resumeTimer',
+    RESET_TIMER: 'resetTimer',
     END_TIMER: 'endTimer',
     GET_TIME_REMAINING: 'getTimeRemaining',
     KILL_PLAYER: 'killPlayer',
     REVEAL_PLAYER: 'revealPlayer',
     TRANSFER_MODERATOR: 'transferModerator',
+    SET_MODERATOR_STATUS: 'setModeratorStatus',
     CHANGE_NAME: 'changeName',
     END_GAME: 'endGame',
     PLAYER_JOINED: 'playerJoined',
@@ -86,6 +90,7 @@ export const TIMER_EVENTS = function () {
     return [
         EVENT_IDS.PAUSE_TIMER,
         EVENT_IDS.RESUME_TIMER,
+        EVENT_IDS.RESET_TIMER,
         EVENT_IDS.GET_TIME_REMAINING,
         EVENT_IDS.END_TIMER
     ];

@@ -157,6 +157,15 @@ export const HTMLFragments = {
             <button id='close-player-options-modal-button' class='app-button cancel'>Close</button>
         </div>
     </div>`,
+    MODERATOR_CONTROL_MODAL:
+    `<div id='moderator-control-modal-background' class='modal-background'></div>
+    <div tabindex='-1' id='moderator-control-modal' class='modal'>
+        <h2 id="moderator-control-modal-title">Moderator Controls</h2>
+        <div id='moderator-control-modal-content'></div>
+        <div class='modal-button-container'>
+            <button id='close-moderator-control-modal-button' class='app-button cancel'>Close</button>
+        </div>
+    </div>`,
     MODERATOR_GAME_VIEW:
     `<div id='game-header'>
         <div id='timer-container-moderator'>
