@@ -2,6 +2,7 @@ const { RateLimiterMemory } = require('rate-limiter-flexible');
 const redis = require('redis');
 const Events = require('../Events');
 const { EVENT_IDS, REDIS_CHANNELS, PRIMITIVES, SOCKET_EVENTS, TIMER_EVENTS, SYNCABLE_EVENTS } = require('../../config/globals');
+const { getPublicRuntimeConfig } = require('../../config/runtime');
 
 class EventManager {
     constructor (logger, instanceId) {
@@ -108,7 +109,7 @@ class EventManager {
             });
         } else {
             io = require('socket.io')(main, {
-                cors: { origin: 'https://play-werewolf.app' }
+                cors: { origin: getPublicRuntimeConfig().publicOrigin }
             });
         }
 

@@ -1,3 +1,7 @@
+const { getPublicRuntimeConfig } = require('./runtime');
+
+const runtimeConfig = getPublicRuntimeConfig();
+
 const PRIMITIVES = {
     ACCESS_CODE_CHAR_POOL: 'BCDFGHJLMNPQRSTVWXYZ23456789',
     INSTANCE_ID_CHAR_POOL: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
@@ -29,7 +33,7 @@ const ALIGNMENT = {
 };
 
 const REDIS_CHANNELS = {
-    ACTIVE_GAME_STREAM: 'active_game_stream'
+    ACTIVE_GAME_STREAM: runtimeConfig.redisChannelActiveGameStream
 };
 
 const CORS_OPTIONS = process.env.NODE_ENV?.trim() === 'development'
@@ -38,7 +42,7 @@ const CORS_OPTIONS = process.env.NODE_ENV?.trim() === 'development'
         optionsSuccessStatus: 200
     }
     : {
-        origin: 'https://play-werewolf.app',
+        origin: runtimeConfig.publicOrigin,
         optionsSuccessStatus: 200
     };
 

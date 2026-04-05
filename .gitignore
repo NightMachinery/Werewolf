@@ -4,3 +4,4 @@ client/certs/
 client/dist/
 app.yaml
 .vscode/launch.json
+.self_host/

@@ -1,4 +1,5 @@
 const { LOG_LEVEL, ENVIRONMENTS } = require('../config/globals');
+const { getPublicRuntimeConfig } = require('../config/runtime');
 const http = require('http');
 const https = require('https');
 const path = require('path');
@@ -7,6 +8,7 @@ const crypto = require('crypto');
 const EventManager = require('./singletons/EventManager.js');
 const GameManager = require('./singletons/GameManager.js');
 const rateLimit = require('express-rate-limit').default;
+const { sendConfiguredHtml } = require('../routes/util');
 
 const ServerBootstrapper = {
 
@@ -30,7 +32,7 @@ const ServerBootstrapper = {
         try {
             const args = Array.from(process.argv.map((arg) => arg.trim().toLowerCase()));
             const useHttps = args.includes('protocol=https');
-            const port = process.env.WEB_PORT || args
+            const port = parseInt(process.env.WEB_PORT, 10) || args
                 .filter((arg) => {
                     return /port=\d+/.test(arg);
                 })
@@ -75,11 +77,19 @@ const ServerBootstrapper = {
                 logger.info(`navigate to http://localhost:${port}`);
             }
         } else {
+            const runtimeConfig = getPublicRuntimeConfig();
             logger.warn('starting main in PRODUCTION mode. This should not be used for local development.');
+            logger.info(`Configured public origin: ${runtimeConfig.publicOrigin}`);
             main = http.createServer(app);
             app.use(function (req, res, next) {
                 const schema = (req.headers['x-forwarded-proto'] || '').toLowerCase();
-                if (!req.path.includes('/_ah/start') && req.headers.host.indexOf('localhost') < 0 && schema !== 'https') {
+                const isLocalhostRequest = req.headers.host?.indexOf('localhost') >= 0 || req.headers.host?.indexOf('127.0.0.1') >= 0;
+                if (
+                    runtimeConfig.forceHttps
+                    && !req.path.includes('/_ah/start')
+                    && !isLocalhostRequest
+                    && schema !== 'https'
+                ) {
                     res.redirect('https://' + req.headers.host + req.url);
                 } else {
                     next();
@@ -89,9 +99,9 @@ const ServerBootstrapper = {
                 const nonce = crypto.randomBytes(16).toString('base64');
                 res.setHeader(
                     'Content-Security-Policy',
-                    "default-src 'self'; font-src 'self' https://fonts.gstatic.com/; img-src 'self' https://img.buymeacoffee.com;" +
-                    " script-src 'self'; style-src 'self' https://fonts.googleapis.com/ 'nonce-" + nonce + "'; frame-src 'self'"
+                    "default-src 'self'; connect-src 'self' ws: wss:; font-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; frame-src 'self'; worker-src 'self'"
                 );
+                res.locals.cspNonce = nonce;
                 next();
             });
         }
@@ -150,8 +160,12 @@ const ServerBootstrapper = {
             res.sendFile(path.join(__dirname, '../../client/robots.txt'));
         });
 
-        app.use(standardRateLimit, function (req, res) {
-            res.sendFile(path.join(__dirname, '../../client/src/views/404.html'));
+        app.use(standardRateLimit, async function (req, res, next) {
+            try {
+                await sendConfiguredHtml(res, path.join(__dirname, '../../client/src/views/404.html'));
+            } catch (e) {
+                next(e);
+            }
         });
     }
 };
