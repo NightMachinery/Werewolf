@@ -11,7 +11,8 @@ class Game {
         createTime,
         timerParams = null,
         settings = null,
-        enforcement = null
+        enforcement = null,
+        customVotes = null
     ) {
         this.accessCode = accessCode;
         this.status = status;
@@ -31,6 +32,7 @@ class Game {
         this.timeRemaining = null;
         this.settings = settings;
         this.enforcement = enforcement;
+        this.customVotes = customVotes;
     }
 }
 

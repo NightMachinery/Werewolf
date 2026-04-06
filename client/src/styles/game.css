@@ -1255,6 +1255,18 @@ canvas {
     gap: 0.4rem;
 }
 
+.custom-vote-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.custom-vote-field textarea,
+.custom-vote-field input[type="text"],
+.custom-vote-field select {
+    max-width: 100%;
+}
+
 .history-entry {
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
     padding-bottom: 0.5rem;

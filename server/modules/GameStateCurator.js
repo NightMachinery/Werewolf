@@ -3,6 +3,11 @@ const {
     canAccessBlindMinionEvilInfo,
     canUseEvilChat
 } = require('./Enforcement');
+const {
+    CUSTOM_VOTE_RESULT_DETAILS,
+    ensureCustomVoteState,
+    isCurrentModeratorPerson
+} = require('./CustomVotes');
 
 /* The purpose of this component is to only return the game state information that is necessary. For example, we only
     want to return player role information to moderators. This avoids any possibility of a player having access to
@@ -84,7 +89,8 @@ function getGameStateBasedOnPermissions (game, person) {
                 timerParams: game.timerParams,
                 isStartable: game.isStartable,
                 settings: game.settings,
-                enforcement: curateEnforcementState(game, person, true)
+                enforcement: curateEnforcementState(game, person, true),
+                customVotes: curateCustomVotes(game, person)
             };
         case USER_TYPES.TEMPORARY_MODERATOR:
         case USER_TYPES.SPECTATOR:
@@ -106,7 +112,8 @@ function getGameStateBasedOnPermissions (game, person) {
                 timerParams: game.timerParams,
                 isStartable: game.isStartable,
                 settings: game.settings,
-                enforcement: curateEnforcementState(game, person, false)
+                enforcement: curateEnforcementState(game, person, false),
+                customVotes: curateCustomVotes(game, person)
             };
         default:
             break;
@@ -168,6 +175,102 @@ function curateEnforcementState (game, person, moderatorView) {
             : null,
         countRevealUses: game.enforcement.countRevealUses,
         winner: game.enforcement.winner
+    };
+}
+
+function curateCustomVotes (game, person) {
+    if (game.status !== STATUS.IN_PROGRESS) {
+        return null;
+    }
+
+    const customVotes = ensureCustomVoteState(game);
+    const moderatorView = isCurrentModeratorPerson(game, person);
+    const openVote = customVotes.openVote;
+    let curatedOpenVote = null;
+    if (openVote && (moderatorView || openVote.viewerIds.includes(person.id))) {
+        curatedOpenVote = {
+            id: openVote.id,
+            question: openVote.question,
+            optionSource: openVote.optionSource,
+            ballotMode: openVote.ballotMode,
+            allowPass: openVote.allowPass,
+            audiencePreset: openVote.audiencePreset,
+            audienceScope: openVote.audienceScope,
+            audienceLabel: openVote.audienceLabel,
+            resultDetail: openVote.resultDetail,
+            status: openVote.status,
+            options: openVote.options,
+            yourBallot: openVote.ballots[person.id] || null,
+            canVote: openVote.eligibleVoterIds.includes(person.id),
+            submittedVoterIds: Object.keys(openVote.ballots),
+            eligibleVoterIds: openVote.eligibleVoterIds,
+            openedAt: openVote.openedAt
+        };
+
+        if (moderatorView) {
+            curatedOpenVote.ballots = openVote.ballots;
+            curatedOpenVote.resolution = buildCuratedCustomVoteResolution(openVote);
+        }
+    }
+
+    const history = customVotes.history
+        .filter((entry) => moderatorView || entry.viewerIds.includes(person.id))
+        .map((entry) => ({
+            id: entry.id,
+            type: entry.type,
+            text: entry.text,
+            question: entry.question,
+            optionSource: entry.optionSource,
+            ballotMode: entry.ballotMode,
+            allowPass: entry.allowPass,
+            audiencePreset: entry.audiencePreset,
+            audienceScope: entry.audienceScope,
+            audienceLabel: entry.audienceLabel,
+            resultDetail: entry.resultDetail,
+            options: entry.options,
+            totals: entry.totals,
+            ballots: entry.resultDetail === CUSTOM_VOTE_RESULT_DETAILS.BALLOTS ? entry.ballots : null,
+            winnerOptionIds: entry.winnerOptionIds,
+            topScore: entry.topScore,
+            submittedBallotCount: entry.submittedBallotCount,
+            passCount: entry.passCount,
+            openedAt: entry.openedAt,
+            closedAt: entry.closedAt
+        }));
+
+    return {
+        openVote: curatedOpenVote,
+        history
+    };
+}
+
+function buildCuratedCustomVoteResolution (vote) {
+    const totals = vote.options.map((option) => ({
+        optionId: option.id,
+        candidateId: option.personId || option.id,
+        candidateName: option.label,
+        count: 0
+    }));
+
+    for (const ballot of Object.values(vote.ballots)) {
+        if (ballot.passed) {
+            continue;
+        }
+        for (const selectionId of ballot.selections) {
+            const total = totals.find((entry) => entry.optionId === selectionId);
+            if (total) {
+                total.count += 1;
+            }
+        }
+    }
+
+    const topScore = totals.length ? Math.max(...totals.map((total) => total.count)) : 0;
+    return {
+        totals,
+        topScore,
+        winnerOptionIds: topScore > 0
+            ? totals.filter((total) => total.count === topScore).map((total) => total.optionId)
+            : []
     };
 }
 

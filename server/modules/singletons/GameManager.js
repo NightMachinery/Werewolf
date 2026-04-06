@@ -18,6 +18,7 @@ const {
     normalizeDeckEntry,
     normalizeSettings
 } = require('../Enforcement');
+const { createCustomVoteState } = require('../CustomVotes');
 
 class GameManager {
     constructor (logger, environment, instanceId) {
@@ -293,6 +294,7 @@ class GameManager {
 
         game.status = STATUS.LOBBY;
         game.enforcement = createEnforcementState(game);
+        game.customVotes = createCustomVoteState();
 
         await this.refreshGame(game);
         await this.eventManager.publisher?.publish(

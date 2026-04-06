@@ -98,6 +98,7 @@ export class InProgress {
         }
 
         this.renderEnforcementPanels();
+        this.renderCustomVotePanels();
     }
 
     renderPlayerView (isKilled = false) {
@@ -538,6 +539,44 @@ export class InProgress {
 
         this.container.appendChild(container);
     }
+
+    renderCustomVotePanels () {
+        document.getElementById('custom-vote-root')?.remove();
+        const gameState = this.stateBucket.currentGameState;
+        const hasVisibleOpenVote = Boolean(gameState.customVotes?.openVote);
+        const hasVisibleHistory = Boolean(gameState.customVotes?.history?.length);
+        const isCurrentModerator = gameState.client.id === gameState.currentModeratorId
+            && (gameState.client.userType === USER_TYPES.MODERATOR || gameState.client.userType === USER_TYPES.TEMPORARY_MODERATOR);
+
+        if (!hasVisibleOpenVote && !hasVisibleHistory && !isCurrentModerator) {
+            return;
+        }
+
+        const container = document.createElement('div');
+        container.id = 'custom-vote-root';
+        container.classList.add('enforcement-root');
+
+        const openVotePanel = buildCustomVotePanel(gameState, this.socket);
+        if (openVotePanel) {
+            container.appendChild(openVotePanel);
+        }
+
+        const historyPanel = buildCustomVoteHistoryPanel(gameState);
+        if (historyPanel) {
+            container.appendChild(historyPanel);
+        }
+
+        const moderatorPanel = buildModeratorCustomVotePanel(gameState, this.socket);
+        if (moderatorPanel) {
+            container.appendChild(moderatorPanel);
+        }
+
+        if (!container.children.length) {
+            return;
+        }
+
+        this.container.appendChild(container);
+    }
 }
 
 function renderPlayerRole (gameState) {
@@ -929,6 +968,320 @@ function buildVotePanel (gameState, socket) {
     return panel;
 }
 
+function buildCustomVotePanel (gameState, socket) {
+    const vote = gameState.customVotes?.openVote;
+    if (!vote) {
+        return null;
+    }
+
+    const panel = document.createElement('section');
+    panel.classList.add('enforcement-panel');
+    const title = document.createElement('h3');
+    title.innerText = 'Custom Vote';
+    panel.appendChild(title);
+
+    const question = document.createElement('div');
+    question.classList.add('history-entry-details');
+    question.innerText = vote.question;
+    panel.appendChild(question);
+
+    const meta = document.createElement('div');
+    meta.classList.add('history-entry-details');
+    meta.innerText = `${vote.audienceLabel} | ${vote.ballotMode === 'single' ? 'single vote' : 'multi vote'}${vote.allowPass ? ' | pass allowed' : ' | pass not allowed'}`;
+    panel.appendChild(meta);
+
+    const submittedNames = (vote.submittedVoterIds || [])
+        .map((personId) => getPersonById(gameState, personId)?.name || personId);
+    const participation = document.createElement('div');
+    participation.classList.add('history-entry-details');
+    participation.innerText = submittedNames.length
+        ? 'Submitted: ' + submittedNames.join(', ')
+        : 'No ballots submitted yet.';
+    panel.appendChild(participation);
+
+    if (vote.canVote) {
+        const form = document.createElement('div');
+        form.classList.add('vote-form');
+        const currentSelections = new Set(vote.yourBallot?.selections || []);
+        vote.options.forEach((option) => {
+            const label = document.createElement('label');
+            label.classList.add('checkbox-label');
+            const input = document.createElement('input');
+            input.type = vote.ballotMode === 'single' ? 'radio' : 'checkbox';
+            input.name = 'custom-vote-option';
+            input.value = option.id;
+            input.checked = currentSelections.has(option.id);
+            label.appendChild(input);
+            label.appendChild(document.createTextNode(option.label));
+            form.appendChild(label);
+        });
+        panel.appendChild(form);
+
+        const submitButton = document.createElement('button');
+        submitButton.classList.add('app-button');
+        submitButton.innerText = 'Submit Vote';
+        submitButton.addEventListener('click', () => {
+            const selector = vote.ballotMode === 'single'
+                ? 'input[type="radio"]:checked'
+                : 'input[type="checkbox"]:checked';
+            const selections = Array.from(form.querySelectorAll(selector)).map((el) => el.value);
+            if (!vote.allowPass && selections.length === 0) {
+                toast('Select at least one option.', 'warning', true, true, 'short');
+                return;
+            }
+            socket.emit(
+                SOCKET_EVENTS.IN_GAME_MESSAGE,
+                EVENT_IDS.SUBMIT_CUSTOM_VOTE,
+                gameState.accessCode,
+                { selections, passed: false }
+            );
+        });
+        panel.appendChild(submitButton);
+
+        if (vote.allowPass) {
+            const passButton = document.createElement('button');
+            passButton.classList.add('app-button', 'cancel');
+            passButton.innerText = 'Pass';
+            passButton.addEventListener('click', () => {
+                socket.emit(
+                    SOCKET_EVENTS.IN_GAME_MESSAGE,
+                    EVENT_IDS.SUBMIT_CUSTOM_VOTE,
+                    gameState.accessCode,
+                    { selections: [], passed: true }
+                );
+            });
+            panel.appendChild(passButton);
+        }
+    } else {
+        const info = document.createElement('div');
+        info.innerText = 'You can view this vote, but you are not eligible to vote.';
+        panel.appendChild(info);
+    }
+
+    if (isCurrentModeratorClient(gameState) && vote.resolution) {
+        panel.appendChild(renderCustomVoteResolution(vote.resolution, vote));
+        if (vote.ballots) {
+            const ballots = document.createElement('div');
+            ballots.classList.add('history-entry-details');
+            Object.entries(vote.ballots).forEach(([voterId, ballot]) => {
+                const line = document.createElement('div');
+                const voterName = getPersonById(gameState, voterId)?.name || voterId;
+                const selectionNames = (ballot.selections || [])
+                    .map((selectionId) => vote.options.find((option) => option.id === selectionId)?.label || selectionId)
+                    .join(', ');
+                line.innerText = voterName + ': ' + (ballot.passed ? 'pass' : selectionNames);
+                ballots.appendChild(line);
+            });
+            panel.appendChild(ballots);
+        }
+    }
+
+    return panel;
+}
+
+function buildCustomVoteHistoryPanel (gameState) {
+    const history = gameState.customVotes?.history || [];
+    if (!history.length) {
+        return null;
+    }
+
+    const panel = document.createElement('section');
+    panel.classList.add('enforcement-panel');
+    panel.innerHTML = '<h3>Custom Vote History</h3>';
+
+    const list = document.createElement('div');
+    list.classList.add('history-list');
+    history.slice().reverse().forEach((entry) => {
+        const item = document.createElement('div');
+        item.classList.add('history-entry');
+
+        const title = document.createElement('div');
+        title.innerText = entry.question;
+        item.appendChild(title);
+
+        const summary = document.createElement('div');
+        summary.classList.add('history-entry-details');
+        summary.innerText = entry.text;
+        item.appendChild(summary);
+
+        if (entry.totals) {
+            const totals = document.createElement('div');
+            totals.classList.add('history-entry-details');
+            entry.totals.forEach((total) => {
+                const line = document.createElement('div');
+                line.innerText = `${total.candidateName}: ${total.count}`;
+                totals.appendChild(line);
+            });
+            item.appendChild(totals);
+        }
+
+        if (entry.ballots) {
+            const ballots = document.createElement('div');
+            ballots.classList.add('history-entry-details');
+            entry.ballots.forEach((ballot) => {
+                const line = document.createElement('div');
+                line.innerText = ballot.voterName + ': ' + (ballot.passed ? 'pass' : ballot.selectionNames.join(', '));
+                ballots.appendChild(line);
+            });
+            item.appendChild(ballots);
+        }
+
+        list.appendChild(item);
+    });
+
+    panel.appendChild(list);
+    return panel;
+}
+
+function buildModeratorCustomVotePanel (gameState, socket) {
+    if (!isCurrentModeratorClient(gameState)) {
+        return null;
+    }
+
+    const panel = document.createElement('section');
+    panel.classList.add('enforcement-panel');
+    panel.innerHTML = '<h3>Moderator Custom Votes</h3>';
+
+    const openVote = gameState.customVotes?.openVote;
+    if (openVote) {
+        const info = document.createElement('div');
+        info.classList.add('history-entry-details');
+        info.innerText = 'A custom vote is open. Close it before starting another vote.';
+        panel.appendChild(info);
+
+        const closeButton = document.createElement('button');
+        closeButton.classList.add('app-button', 'cancel');
+        closeButton.innerText = 'Close Custom Vote';
+        closeButton.addEventListener('click', () => {
+            socket.emit(
+                SOCKET_EVENTS.IN_GAME_MESSAGE,
+                EVENT_IDS.CLOSE_CUSTOM_VOTE,
+                gameState.accessCode
+            );
+        });
+        panel.appendChild(closeButton);
+        return panel;
+    }
+
+    if (gameState.enforcement?.openVote?.status === 'open') {
+        const blocked = document.createElement('div');
+        blocked.classList.add('history-entry-details');
+        blocked.innerText = 'Finish the current enforced vote before starting a custom vote.';
+        panel.appendChild(blocked);
+        return panel;
+    }
+
+    const form = document.createElement('div');
+    form.classList.add('vote-form');
+
+    const questionInput = document.createElement('input');
+    questionInput.type = 'text';
+    questionInput.placeholder = 'Vote question';
+    form.appendChild(buildConfigField('Question', questionInput));
+
+    const optionSourceSelect = document.createElement('select');
+    optionSourceSelect.innerHTML =
+        '<option value="custom">Custom choices</option>' +
+        '<option value="players">Player list</option>';
+    form.appendChild(buildConfigField('Option source', optionSourceSelect));
+
+    const customOptionsInput = document.createElement('textarea');
+    customOptionsInput.rows = 4;
+    customOptionsInput.placeholder = 'One choice per line';
+    const customOptionsField = buildConfigField('Custom choices', customOptionsInput);
+    form.appendChild(customOptionsField);
+
+    const playerPicker = document.createElement('div');
+    playerPicker.classList.add('vote-form');
+    getCustomVotePlayerOptions(gameState).forEach((person) => {
+        const label = document.createElement('label');
+        label.classList.add('checkbox-label');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = person.id;
+        label.appendChild(checkbox);
+        label.appendChild(document.createTextNode(person.name + (person.out ? ' ☠' : '')));
+        playerPicker.appendChild(label);
+    });
+    const playerPickerField = buildConfigField('Player options', playerPicker);
+    playerPickerField.style.display = 'none';
+    form.appendChild(playerPickerField);
+
+    const ballotModeSelect = document.createElement('select');
+    ballotModeSelect.innerHTML =
+        '<option value="single">Single vote</option>' +
+        '<option value="multi">Multi vote</option>';
+    form.appendChild(buildConfigField('Ballot mode', ballotModeSelect));
+
+    const passAllowedCheckbox = document.createElement('input');
+    passAllowedCheckbox.type = 'checkbox';
+    passAllowedCheckbox.checked = true;
+    form.appendChild(buildConfigField('Allow pass', passAllowedCheckbox));
+
+    const audiencePresetSelect = document.createElement('select');
+    audiencePresetSelect.innerHTML =
+        '<option value="all">All</option>' +
+        '<option value="good">Good</option>' +
+        '<option value="evil">Evil</option>' +
+        '<option value="independent">Independent</option>' +
+        '<option value="evilKnown">Evil who know evil</option>' +
+        '<option value="blindMinion">Blind Minion</option>' +
+        '<option value="moderatorOnly">Moderator only</option>';
+    form.appendChild(buildConfigField('Audience', audiencePresetSelect));
+
+    const audienceScopeSelect = document.createElement('select');
+    audienceScopeSelect.innerHTML =
+        '<option value="living">Living only</option>' +
+        '<option value="all">All matching players</option>';
+    const audienceScopeField = buildConfigField('Audience scope', audienceScopeSelect);
+    form.appendChild(audienceScopeField);
+
+    const resultDetailSelect = document.createElement('select');
+    resultDetailSelect.innerHTML =
+        '<option value="totals">Totals only</option>' +
+        '<option value="ballots">Full ballots</option>';
+    form.appendChild(buildConfigField('Results after close', resultDetailSelect));
+
+    optionSourceSelect.addEventListener('change', () => {
+        const usePlayers = optionSourceSelect.value === 'players';
+        customOptionsField.style.display = usePlayers ? 'none' : '';
+        playerPickerField.style.display = usePlayers ? '' : 'none';
+    });
+
+    audiencePresetSelect.addEventListener('change', () => {
+        audienceScopeField.style.display = audiencePresetSelect.value === 'moderatorOnly' ? 'none' : '';
+    });
+
+    panel.appendChild(form);
+
+    const startButton = document.createElement('button');
+    startButton.classList.add('app-button');
+    startButton.innerText = 'Start Custom Vote';
+    startButton.addEventListener('click', () => {
+        const playerOptionIds = Array.from(playerPicker.querySelectorAll('input[type="checkbox"]:checked')).map((input) => input.value);
+        const customOptionLabels = customOptionsInput.value.split('\n');
+        socket.emit(
+            SOCKET_EVENTS.IN_GAME_MESSAGE,
+            EVENT_IDS.START_CUSTOM_VOTE,
+            gameState.accessCode,
+            {
+                question: questionInput.value,
+                optionSource: optionSourceSelect.value,
+                customOptionLabels,
+                playerOptionIds,
+                ballotMode: ballotModeSelect.value,
+                allowPass: passAllowedCheckbox.checked,
+                audiencePreset: audiencePresetSelect.value,
+                audienceScope: audiencePresetSelect.value === 'moderatorOnly' ? null : audienceScopeSelect.value,
+                resultDetail: resultDetailSelect.value
+            }
+        );
+    });
+    panel.appendChild(startButton);
+
+    return panel;
+}
+
 function buildNightActionPanel (gameState, socket) {
     const enforcement = gameState.enforcement;
     if (enforcement.phase !== 'night') {
@@ -1312,6 +1665,33 @@ function renderVoteResolution (resolution, gameState) {
     return container;
 }
 
+function renderCustomVoteResolution (resolution, vote) {
+    const container = document.createElement('div');
+    container.classList.add('history-entry');
+
+    if (resolution.winnerOptionIds?.length === 1) {
+        const winner = vote.options.find((option) => option.id === resolution.winnerOptionIds[0]);
+        container.innerText = 'Current leader: ' + (winner?.label || 'unknown') + ` with ${resolution.topScore} vote${resolution.topScore === 1 ? '' : 's'}.`;
+    } else if (resolution.winnerOptionIds?.length > 1) {
+        const labels = resolution.winnerOptionIds
+            .map((optionId) => vote.options.find((option) => option.id === optionId)?.label || optionId)
+            .join(', ');
+        container.innerText = 'Current tie: ' + labels + ` with ${resolution.topScore} vote${resolution.topScore === 1 ? '' : 's'}.`;
+    } else {
+        container.innerText = 'No counted votes yet.';
+    }
+
+    const totals = document.createElement('div');
+    totals.classList.add('history-entry-details');
+    resolution.totals.forEach((total) => {
+        const line = document.createElement('div');
+        line.innerText = `${total.candidateName}: ${total.count}`;
+        totals.appendChild(line);
+    });
+    container.appendChild(totals);
+    return container;
+}
+
 function clientCanVote (gameState, vote) {
     const client = gameState.client;
     if (vote.type === 'day') {
@@ -1333,8 +1713,28 @@ function getPersonById (gameState, personId) {
     return gameState.people.find((person) => person.id === personId) || null;
 }
 
+function getCustomVotePlayerOptions (gameState) {
+    return [gameState.client, ...gameState.people]
+        .filter((person, index, array) => array.findIndex((candidate) => candidate.id === person.id) === index)
+        .filter((person) => person.userType !== USER_TYPES.MODERATOR && person.userType !== USER_TYPES.SPECTATOR);
+}
+
+function buildConfigField (labelText, inputElement) {
+    const wrapper = document.createElement('label');
+    wrapper.classList.add('custom-vote-field');
+    const label = document.createElement('span');
+    label.innerText = labelText;
+    wrapper.appendChild(label);
+    wrapper.appendChild(inputElement);
+    return wrapper;
+}
+
 function isModeratorClient (gameState) {
     return gameState.client.userType === USER_TYPES.MODERATOR || gameState.client.userType === USER_TYPES.TEMPORARY_MODERATOR;
+}
+
+function isCurrentModeratorClient (gameState) {
+    return isModeratorClient(gameState) && gameState.client.id === gameState.currentModeratorId;
 }
 
 function formatCountdown (endsAt) {

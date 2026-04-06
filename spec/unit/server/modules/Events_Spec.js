@@ -6,6 +6,7 @@ const EventManager = require('../../../../server/modules/singletons/EventManager
 const Events = require('../../../../server/modules/Events.js');
 const GameStateCurator = require('../../../../server/modules/GameStateCurator.js');
 const { createEnforcementState } = require('../../../../server/modules/Enforcement.js');
+const { createCustomVoteState } = require('../../../../server/modules/CustomVotes.js');
 const logger = require('../../../../server/modules/Logger.js')(false);
 
 describe('Events', () => {
@@ -745,6 +746,257 @@ describe('Events', () => {
             expect(game.enforcement.openVote).toBeNull();
             expect(game.enforcement.publicHistory[game.enforcement.publicHistory.length - 1].text)
                 .toContain('falling short of the day-vote threshold');
+        });
+    });
+
+    describe(EVENT_IDS.START_CUSTOM_VOTE, () => {
+        beforeEach(() => {
+            game.status = STATUS.IN_PROGRESS;
+            game.customVotes = createCustomVoteState();
+            game.people = [
+                { id: 'a', socketId: 'moderator-socket', name: 'Mod', assigned: true, out: true, killed: false, userType: USER_TYPES.MODERATOR },
+                { id: 'b', socketId: 'player-b', name: 'Alice', gameRole: 'Villager', alignment: 'good', assigned: true, out: false, killed: false, userType: USER_TYPES.PLAYER, roleState: {}, evilChatAccess: false },
+                { id: 'c', socketId: 'player-c', name: 'Bob', gameRole: 'Werewolf', alignment: 'evil', assigned: true, out: false, killed: false, userType: USER_TYPES.PLAYER, roleState: {}, evilChatAccess: true },
+                { id: 'd', socketId: 'player-d', name: 'Cara', gameRole: 'Blind Minion', alignment: 'evil', assigned: true, out: true, killed: true, userType: USER_TYPES.KILLED_PLAYER, roleState: {}, evilChatAccess: false }
+            ];
+        });
+
+        it('should start a custom vote with custom options', async () => {
+            await Events.find((e) => e.id === EVENT_IDS.START_CUSTOM_VOTE)
+                .stateChange(game, {
+                    question: 'Who leads?',
+                    optionSource: 'custom',
+                    customOptionLabels: ['Alice', 'Bob', 'Bob'],
+                    ballotMode: 'single',
+                    allowPass: true,
+                    audiencePreset: 'all',
+                    audienceScope: 'living',
+                    resultDetail: 'totals'
+                }, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+
+            expect(game.customVotes.openVote.question).toEqual('Who leads?');
+            expect(game.customVotes.openVote.options.map((option) => option.label)).toEqual(['Alice', 'Bob']);
+            expect(game.customVotes.openVote.eligibleVoterIds).toEqual(['b', 'c']);
+        });
+
+        it('should allow player-option votes to include dead players when scope is informational', async () => {
+            await Events.find((e) => e.id === EVENT_IDS.START_CUSTOM_VOTE)
+                .stateChange(game, {
+                    question: 'Who is suspicious?',
+                    optionSource: 'players',
+                    playerOptionIds: ['b', 'd'],
+                    ballotMode: 'multi',
+                    allowPass: false,
+                    audiencePreset: 'all',
+                    audienceScope: 'all',
+                    resultDetail: 'ballots'
+                }, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+
+            expect(game.customVotes.openVote.options.map((option) => option.personId)).toEqual(['b', 'd']);
+            expect(game.customVotes.openVote.ballotMode).toEqual('multi');
+        });
+
+        it('should support evil-known and moderator-only audiences', async () => {
+            await Events.find((e) => e.id === EVENT_IDS.START_CUSTOM_VOTE)
+                .stateChange(game, {
+                    question: 'Evil only?',
+                    optionSource: 'custom',
+                    customOptionLabels: ['yes'],
+                    ballotMode: 'single',
+                    allowPass: true,
+                    audiencePreset: 'evilKnown',
+                    audienceScope: 'all',
+                    resultDetail: 'totals'
+                }, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+
+            expect(game.customVotes.openVote.eligibleVoterIds).toEqual(['c']);
+
+            game.customVotes.openVote = null;
+
+            await Events.find((e) => e.id === EVENT_IDS.START_CUSTOM_VOTE)
+                .stateChange(game, {
+                    question: 'Mod only?',
+                    optionSource: 'custom',
+                    customOptionLabels: ['yes'],
+                    ballotMode: 'single',
+                    allowPass: false,
+                    audiencePreset: 'moderatorOnly',
+                    resultDetail: 'totals'
+                }, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+
+            expect(game.customVotes.openVote.eligibleVoterIds).toEqual(['a']);
+        });
+
+        it('should not start when another open vote already exists', async () => {
+            game.settings = { enforcementEnabled: true, allowFirstDayVillageVote: true };
+            game.enforcement = createEnforcementState(game);
+            game.enforcement.openVote = { type: 'day', status: 'open', candidateIds: ['b'], ballots: {} };
+
+            await Events.find((e) => e.id === EVENT_IDS.START_CUSTOM_VOTE)
+                .stateChange(game, {
+                    question: 'Blocked?',
+                    optionSource: 'custom',
+                    customOptionLabels: ['yes'],
+                    ballotMode: 'single',
+                    allowPass: true,
+                    audiencePreset: 'all',
+                    audienceScope: 'living',
+                    resultDetail: 'totals'
+                }, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+
+            expect(game.customVotes.openVote).toBeNull();
+        });
+    });
+
+    describe(EVENT_IDS.SUBMIT_CUSTOM_VOTE, () => {
+        beforeEach(async () => {
+            game.status = STATUS.IN_PROGRESS;
+            game.customVotes = createCustomVoteState();
+            game.people = [
+                { id: 'a', socketId: 'moderator-socket', name: 'Mod', assigned: true, out: true, killed: false, userType: USER_TYPES.MODERATOR },
+                { id: 'b', socketId: 'player-b', name: 'Alice', gameRole: 'Villager', alignment: 'good', assigned: true, out: false, killed: false, userType: USER_TYPES.PLAYER, roleState: {}, evilChatAccess: false },
+                { id: 'c', socketId: 'player-c', name: 'Bob', gameRole: 'Werewolf', alignment: 'evil', assigned: true, out: false, killed: false, userType: USER_TYPES.PLAYER, roleState: {}, evilChatAccess: true }
+            ];
+
+            await Events.find((e) => e.id === EVENT_IDS.START_CUSTOM_VOTE)
+                .stateChange(game, {
+                    question: 'Pick one',
+                    optionSource: 'custom',
+                    customOptionLabels: ['Alice', 'Bob'],
+                    ballotMode: 'single',
+                    allowPass: false,
+                    audiencePreset: 'all',
+                    audienceScope: 'living',
+                    resultDetail: 'totals'
+                }, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+        });
+
+        it('should reject invalid single-choice submissions and keep the prior ballot', async () => {
+            const optionIds = game.customVotes.openVote.options.map((option) => option.id);
+
+            await Events.find((e) => e.id === EVENT_IDS.SUBMIT_CUSTOM_VOTE)
+                .stateChange(game, { selections: [optionIds[0]], passed: false }, { gameManager: gameManager, requestingSocketId: 'player-b' });
+
+            await Events.find((e) => e.id === EVENT_IDS.SUBMIT_CUSTOM_VOTE)
+                .stateChange(game, { selections: optionIds, passed: false }, { gameManager: gameManager, requestingSocketId: 'player-b' });
+
+            await Events.find((e) => e.id === EVENT_IDS.SUBMIT_CUSTOM_VOTE)
+                .stateChange(game, { selections: [], passed: true }, { gameManager: gameManager, requestingSocketId: 'player-b' });
+
+            expect(game.customVotes.openVote.ballots.b.selections).toEqual([optionIds[0]]);
+            expect(game.customVotes.openVote.ballots.b.passed).toBeFalse();
+        });
+
+        it('should accept multi-vote resubmissions and passes when enabled', async () => {
+            game.customVotes.openVote = null;
+
+            await Events.find((e) => e.id === EVENT_IDS.START_CUSTOM_VOTE)
+                .stateChange(game, {
+                    question: 'Pick many',
+                    optionSource: 'custom',
+                    customOptionLabels: ['Alice', 'Bob'],
+                    ballotMode: 'multi',
+                    allowPass: true,
+                    audiencePreset: 'all',
+                    audienceScope: 'living',
+                    resultDetail: 'ballots'
+                }, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+
+            const optionIds = game.customVotes.openVote.options.map((option) => option.id);
+
+            await Events.find((e) => e.id === EVENT_IDS.SUBMIT_CUSTOM_VOTE)
+                .stateChange(game, { selections: optionIds, passed: false }, { gameManager: gameManager, requestingSocketId: 'player-c' });
+            await Events.find((e) => e.id === EVENT_IDS.SUBMIT_CUSTOM_VOTE)
+                .stateChange(game, { selections: [], passed: true }, { gameManager: gameManager, requestingSocketId: 'player-c' });
+
+            expect(game.customVotes.openVote.ballots.c.passed).toBeTrue();
+            expect(game.customVotes.openVote.ballots.c.selections).toEqual([]);
+        });
+    });
+
+    describe(EVENT_IDS.CLOSE_CUSTOM_VOTE, () => {
+        beforeEach(async () => {
+            game.status = STATUS.IN_PROGRESS;
+            game.customVotes = createCustomVoteState();
+            game.people = [
+                { id: 'a', socketId: 'moderator-socket', name: 'Mod', assigned: true, out: true, killed: false, userType: USER_TYPES.MODERATOR },
+                { id: 'b', socketId: 'player-b', name: 'Alice', gameRole: 'Villager', alignment: 'good', assigned: true, out: false, killed: false, userType: USER_TYPES.PLAYER, roleState: {}, evilChatAccess: false },
+                { id: 'c', socketId: 'player-c', name: 'Bob', gameRole: 'Werewolf', alignment: 'evil', assigned: true, out: false, killed: false, userType: USER_TYPES.PLAYER, roleState: {}, evilChatAccess: true },
+                { id: 'd', socketId: 'spectator-socket', name: 'Spectator', assigned: true, out: true, killed: false, userType: USER_TYPES.SPECTATOR }
+            ];
+
+            await Events.find((e) => e.id === EVENT_IDS.START_CUSTOM_VOTE)
+                .stateChange(game, {
+                    question: 'Pick one',
+                    optionSource: 'custom',
+                    customOptionLabels: ['Alice', 'Bob'],
+                    ballotMode: 'single',
+                    allowPass: true,
+                    audiencePreset: 'all',
+                    audienceScope: 'living',
+                    resultDetail: 'totals'
+                }, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+
+            const optionIds = game.customVotes.openVote.options.map((option) => option.id);
+            await Events.find((e) => e.id === EVENT_IDS.SUBMIT_CUSTOM_VOTE)
+                .stateChange(game, { selections: [optionIds[0]], passed: false }, { gameManager: gameManager, requestingSocketId: 'player-b' });
+            await Events.find((e) => e.id === EVENT_IDS.SUBMIT_CUSTOM_VOTE)
+                .stateChange(game, { selections: [optionIds[0]], passed: false }, { gameManager: gameManager, requestingSocketId: 'player-c' });
+        });
+
+        it('should archive closed custom votes and hide totals-only ballots from viewers', async () => {
+            await Events.find((e) => e.id === EVENT_IDS.CLOSE_CUSTOM_VOTE)
+                .stateChange(game, {}, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+
+            expect(game.customVotes.openVote).toBeNull();
+            expect(game.customVotes.history.length).toEqual(1);
+            expect(game.customVotes.history[0].winnerOptionIds.length).toEqual(1);
+
+            const moderatorView = GameStateCurator.getGameStateFromPerspectiveOfPerson(game, game.people[0]);
+            const viewerView = GameStateCurator.getGameStateFromPerspectiveOfPerson(game, game.people[1]);
+            const spectatorView = GameStateCurator.getGameStateFromPerspectiveOfPerson(game, game.people[3]);
+
+            expect(moderatorView.customVotes.history[0].totals.length).toEqual(2);
+            expect(viewerView.customVotes.history[0].ballots).toBeNull();
+            expect(spectatorView.customVotes.history.length).toEqual(0);
+        });
+
+        it('should expose live open-vote participation only to the audience and moderator', async () => {
+            const moderatorView = GameStateCurator.getGameStateFromPerspectiveOfPerson(game, game.people[0]);
+            const viewerView = GameStateCurator.getGameStateFromPerspectiveOfPerson(game, game.people[1]);
+            const spectatorView = GameStateCurator.getGameStateFromPerspectiveOfPerson(game, game.people[3]);
+
+            expect(moderatorView.customVotes.openVote.resolution.topScore).toEqual(2);
+            expect(Object.keys(moderatorView.customVotes.openVote.ballots).length).toEqual(2);
+            expect(viewerView.customVotes.openVote.submittedVoterIds).toEqual(['b', 'c']);
+            expect(viewerView.customVotes.openVote.resolution).toBeUndefined();
+            expect(spectatorView.customVotes.openVote).toBeNull();
+        });
+
+        it('should include full ballots after close when configured', async () => {
+            game.customVotes.openVote = null;
+
+            await Events.find((e) => e.id === EVENT_IDS.START_CUSTOM_VOTE)
+                .stateChange(game, {
+                    question: 'Visible ballots',
+                    optionSource: 'custom',
+                    customOptionLabels: ['Alice', 'Bob'],
+                    ballotMode: 'single',
+                    allowPass: true,
+                    audiencePreset: 'all',
+                    audienceScope: 'living',
+                    resultDetail: 'ballots'
+                }, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+
+            const optionIds = game.customVotes.openVote.options.map((option) => option.id);
+            await Events.find((e) => e.id === EVENT_IDS.SUBMIT_CUSTOM_VOTE)
+                .stateChange(game, { selections: [optionIds[1]], passed: false }, { gameManager: gameManager, requestingSocketId: 'player-b' });
+
+            await Events.find((e) => e.id === EVENT_IDS.CLOSE_CUSTOM_VOTE)
+                .stateChange(game, {}, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+
+            const viewerView = GameStateCurator.getGameStateFromPerspectiveOfPerson(game, game.people[1]);
+            expect(viewerView.customVotes.history[0].ballots.length).toEqual(1);
         });
     });
 

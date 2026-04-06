@@ -40,6 +40,20 @@ const {
     roleIsSeerFamily,
     createEnforcementState
 } = require('./Enforcement');
+const {
+    CUSTOM_VOTE_AUDIENCE_PRESETS,
+    CUSTOM_VOTE_AUDIENCE_SCOPES,
+    CUSTOM_VOTE_BALLOT_MODES,
+    CUSTOM_VOTE_OPTION_SOURCES,
+    CUSTOM_VOTE_RESULT_DETAILS,
+    buildCustomVoteOptionsFromLabels,
+    buildCustomVoteOptionsFromPeople,
+    createCustomVoteEntryId,
+    createCustomVoteState,
+    ensureCustomVoteState,
+    getAudienceMembers,
+    tallyCustomVote
+} = require('./CustomVotes');
 
 async function handleTimerCommand (timerEventSubtype, game, socketId, vars) {
     switch (timerEventSubtype) {
@@ -261,6 +275,154 @@ function getVoteCandidateNameMap (game, candidateIds) {
         accumulator[candidateId] = person?.name || candidateId;
         return accumulator;
     }, {});
+}
+
+function hasOpenCustomVote (game) {
+    return Boolean(game.customVotes?.openVote && game.customVotes.openVote.status === 'open');
+}
+
+function normalizeCustomVoteQuestion (question) {
+    return typeof question === 'string' ? question.trim() : '';
+}
+
+function buildCustomVoteAudienceLabel (audiencePreset, audienceScope = null) {
+    switch (audiencePreset) {
+        case CUSTOM_VOTE_AUDIENCE_PRESETS.ALL:
+            return audienceScope === CUSTOM_VOTE_AUDIENCE_SCOPES.ALL ? 'All players' : 'Living players';
+        case CUSTOM_VOTE_AUDIENCE_PRESETS.GOOD:
+            return audienceScope === CUSTOM_VOTE_AUDIENCE_SCOPES.ALL ? 'All good players' : 'Living good players';
+        case CUSTOM_VOTE_AUDIENCE_PRESETS.EVIL:
+            return audienceScope === CUSTOM_VOTE_AUDIENCE_SCOPES.ALL ? 'All evil players' : 'Living evil players';
+        case CUSTOM_VOTE_AUDIENCE_PRESETS.INDEPENDENT:
+            return audienceScope === CUSTOM_VOTE_AUDIENCE_SCOPES.ALL ? 'All independent players' : 'Living independent players';
+        case CUSTOM_VOTE_AUDIENCE_PRESETS.EVIL_KNOWN:
+            return audienceScope === CUSTOM_VOTE_AUDIENCE_SCOPES.ALL ? 'All evil players who know the evil team' : 'Living evil players who know the evil team';
+        case CUSTOM_VOTE_AUDIENCE_PRESETS.BLIND_MINION:
+            return audienceScope === CUSTOM_VOTE_AUDIENCE_SCOPES.ALL ? 'All Blind Minions' : 'Living Blind Minions';
+        case CUSTOM_VOTE_AUDIENCE_PRESETS.MODERATOR_ONLY:
+            return 'Moderator only';
+        default:
+            return 'Selected audience';
+    }
+}
+
+function createCustomVoteResolutionText (vote, resolution) {
+    if (!resolution.winnerOptionIds.length) {
+        return `Custom vote closed: ${vote.question} (no counted votes).`;
+    }
+
+    if (resolution.winnerOptionIds.length === 1) {
+        const winner = vote.options.find((option) => option.id === resolution.winnerOptionIds[0]);
+        return `Custom vote closed: ${vote.question} (winner: ${winner?.label || 'unknown'}).`;
+    }
+
+    const winnerLabels = resolution.winnerOptionIds
+        .map((winnerId) => vote.options.find((option) => option.id === winnerId)?.label || winnerId)
+        .join(', ');
+    return `Custom vote closed: ${vote.question} (tie: ${winnerLabels}).`;
+}
+
+function buildCustomVoteHistoryEntry (game, vote, resolution) {
+    return {
+        id: createCustomVoteEntryId(),
+        type: 'custom-vote',
+        text: createCustomVoteResolutionText(vote, resolution),
+        question: vote.question,
+        optionSource: vote.optionSource,
+        ballotMode: vote.ballotMode,
+        allowPass: vote.allowPass,
+        audiencePreset: vote.audiencePreset,
+        audienceScope: vote.audienceScope,
+        audienceLabel: vote.audienceLabel,
+        resultDetail: vote.resultDetail,
+        viewerIds: vote.viewerIds,
+        eligibleVoterIds: vote.eligibleVoterIds,
+        options: vote.options,
+        ballots: Object.entries(vote.ballots).map(([voterId, ballot]) => ({
+            voterId,
+            voterName: getPersonOrNull(game, voterId)?.name || voterId,
+            passed: Boolean(ballot.passed),
+            selections: ballot.selections,
+            selectionNames: ballot.selections.map((selectionId) => vote.options.find((option) => option.id === selectionId)?.label || selectionId)
+        })),
+        totals: vote.options.map((option) => ({
+            optionId: option.id,
+            candidateId: option.personId || option.id,
+            candidateName: option.label,
+            count: resolution.totals[option.id] || 0
+        })),
+        winnerOptionIds: resolution.winnerOptionIds,
+        topScore: resolution.topScore,
+        submittedBallotCount: resolution.submittedBallotCount,
+        passCount: resolution.passCount,
+        openedAt: vote.openedAt,
+        closedAt: new Date().toJSON()
+    };
+}
+
+function createCustomVoteForGame (game, socketArgs) {
+    const question = normalizeCustomVoteQuestion(socketArgs?.question);
+    if (!question) {
+        return null;
+    }
+
+    const optionSource = socketArgs?.optionSource;
+    let options = [];
+    if (optionSource === CUSTOM_VOTE_OPTION_SOURCES.CUSTOM) {
+        options = buildCustomVoteOptionsFromLabels(socketArgs?.customOptionLabels);
+    } else if (optionSource === CUSTOM_VOTE_OPTION_SOURCES.PLAYERS) {
+        options = buildCustomVoteOptionsFromPeople(game, socketArgs?.playerOptionIds);
+    } else {
+        return null;
+    }
+
+    if (options.length === 0) {
+        return null;
+    }
+
+    const ballotMode = socketArgs?.ballotMode === CUSTOM_VOTE_BALLOT_MODES.MULTI
+        ? CUSTOM_VOTE_BALLOT_MODES.MULTI
+        : CUSTOM_VOTE_BALLOT_MODES.SINGLE;
+    const audiencePreset = Object.values(CUSTOM_VOTE_AUDIENCE_PRESETS).includes(socketArgs?.audiencePreset)
+        ? socketArgs.audiencePreset
+        : null;
+    if (!audiencePreset) {
+        return null;
+    }
+    const audienceScope = audiencePreset === CUSTOM_VOTE_AUDIENCE_PRESETS.MODERATOR_ONLY
+        ? null
+        : socketArgs?.audienceScope === CUSTOM_VOTE_AUDIENCE_SCOPES.ALL
+            ? CUSTOM_VOTE_AUDIENCE_SCOPES.ALL
+            : CUSTOM_VOTE_AUDIENCE_SCOPES.LIVING;
+    const audienceMembers = getAudienceMembers(game, audiencePreset, audienceScope);
+    const eligibleVoterIds = audienceMembers.map((person) => person.id);
+    if (eligibleVoterIds.length === 0) {
+        return null;
+    }
+
+    const viewerIds = eligibleVoterIds.slice();
+    const resultDetail = socketArgs?.resultDetail === CUSTOM_VOTE_RESULT_DETAILS.BALLOTS
+        ? CUSTOM_VOTE_RESULT_DETAILS.BALLOTS
+        : CUSTOM_VOTE_RESULT_DETAILS.TOTALS;
+
+    return {
+        id: createCustomVoteEntryId(),
+        type: 'custom',
+        status: 'open',
+        question,
+        optionSource,
+        ballotMode,
+        allowPass: Boolean(socketArgs?.allowPass),
+        audiencePreset,
+        audienceScope,
+        audienceLabel: buildCustomVoteAudienceLabel(audiencePreset, audienceScope),
+        resultDetail,
+        eligibleVoterIds,
+        viewerIds,
+        options,
+        ballots: {},
+        openedAt: new Date().toJSON()
+    };
 }
 
 function buildVoteHistoryEntry (game, vote, resolution) {
@@ -593,6 +755,7 @@ const Events = [
                 game.status = STATUS.IN_PROGRESS;
                 vars.gameManager.deal(game);
                 game.enforcement = createEnforcementState(game);
+                game.customVotes = createCustomVoteState();
                 if (game.enforcement?.enabled) {
                     addPublicHistoryEntry(game, { type: 'phase', text: 'Enforcement mode is active. Day 1 has begun.' });
                     clearNightActions(game);
@@ -871,6 +1034,9 @@ const Events = [
             if (!requireActiveModerator(game, vars) || !game.enforcement?.enabled) {
                 return;
             }
+            if (hasOpenCustomVote(game)) {
+                return;
+            }
             if (game.enforcement.activeHunterPrompt) {
                 return;
             }
@@ -929,6 +1095,9 @@ const Events = [
         id: EVENT_IDS.START_DAY_VOTE,
         stateChange: async (game, socketArgs, vars) => {
             if (!requireActiveModerator(game, vars) || !game.enforcement?.enabled || game.enforcement.phase !== PHASES.DAY) {
+                return;
+            }
+            if (hasOpenCustomVote(game)) {
                 return;
             }
             if (!shouldAllowFirstDayVote(game) || game.enforcement.openVote) {
@@ -1071,6 +1240,97 @@ const Events = [
             });
             game.enforcement.openVote = null;
             maybeAutoEndGame(game);
+        },
+        communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
+            syncRoomState(game, vars);
+        }
+    },
+    {
+        id: EVENT_IDS.START_CUSTOM_VOTE,
+        stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars) || game.status !== STATUS.IN_PROGRESS) {
+                return;
+            }
+
+            const customVotes = ensureCustomVoteState(game);
+            if (hasOpenCustomVote(game) || game.enforcement?.openVote?.status === 'open') {
+                return;
+            }
+
+            const vote = createCustomVoteForGame(game, socketArgs);
+            if (!vote) {
+                return;
+            }
+
+            customVotes.openVote = vote;
+        },
+        communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
+            syncRoomState(game, vars);
+        }
+    },
+    {
+        id: EVENT_IDS.SUBMIT_CUSTOM_VOTE,
+        stateChange: async (game, socketArgs, vars) => {
+            const requester = getRequestingPerson(game, vars);
+            const vote = game.customVotes?.openVote;
+            if (!requester || !vote || vote.status !== 'open') {
+                return;
+            }
+
+            if (!vote.eligibleVoterIds.includes(requester.id)) {
+                return;
+            }
+
+            const selections = Array.isArray(socketArgs?.selections)
+                ? socketArgs.selections.filter((selection, index, array) => array.indexOf(selection) === index)
+                : [];
+            const passed = Boolean(socketArgs?.passed);
+            if (selections.some((selectionId) => !vote.options.find((option) => option.id === selectionId))) {
+                return;
+            }
+            if (vote.ballotMode === CUSTOM_VOTE_BALLOT_MODES.SINGLE && selections.length > 1) {
+                return;
+            }
+            if (!vote.allowPass && passed) {
+                return;
+            }
+            if (!passed && selections.length === 0) {
+                return;
+            }
+
+            vote.ballots[requester.id] = {
+                selections: passed ? [] : selections,
+                passed,
+                submittedAt: new Date().toJSON()
+            };
+        },
+        communicate: async (game, socketArgs, vars) => {
+            syncRoomState(game, vars);
+        }
+    },
+    {
+        id: EVENT_IDS.CLOSE_CUSTOM_VOTE,
+        stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars)) {
+                return;
+            }
+
+            const customVotes = ensureCustomVoteState(game);
+            const vote = customVotes.openVote;
+            if (!vote || vote.status !== 'open') {
+                return;
+            }
+
+            vote.status = 'closed';
+            const resolution = tallyCustomVote(vote);
+            customVotes.history.push(buildCustomVoteHistoryEntry(game, vote, resolution));
+            customVotes.openVote = null;
         },
         communicate: async (game, socketArgs, vars) => {
             if (vars.authorizationFailed) {
