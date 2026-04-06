@@ -5,6 +5,7 @@ const GameManager = require('../../../../server/modules/singletons/GameManager.j
 const EventManager = require('../../../../server/modules/singletons/EventManager.js');
 const Events = require('../../../../server/modules/Events.js');
 const GameStateCurator = require('../../../../server/modules/GameStateCurator.js');
+const { createEnforcementState } = require('../../../../server/modules/Enforcement.js');
 const logger = require('../../../../server/modules/Logger.js')(false);
 
 describe('Events', () => {
@@ -689,6 +690,61 @@ describe('Events', () => {
                 expect(namespace.in).toHaveBeenCalledWith(game.accessCode);
                 expect(namespace.in().emit).toHaveBeenCalledWith(EVENT_IDS.RESET_TIMER, 3600000);
             });
+        });
+    });
+
+    describe(EVENT_IDS.RESOLVE_DAY_VOTE, () => {
+        beforeEach(() => {
+            game.status = STATUS.IN_PROGRESS;
+            game.settings = { enforcementEnabled: true, allowFirstDayVillageVote: true };
+            game.enforcement = createEnforcementState(game);
+            game.people = [
+                { id: 'a', socketId: 'moderator-socket', name: 'Mod', assigned: true, out: true, killed: false, userType: USER_TYPES.MODERATOR },
+                { id: 'b', socketId: 'player-b', name: 'Alice', gameRole: 'Villager', alignment: 'good', assigned: true, out: false, killed: false, userType: USER_TYPES.PLAYER },
+                { id: 'c', socketId: 'player-c', name: 'Bob', gameRole: 'Villager', alignment: 'good', assigned: true, out: false, killed: false, userType: USER_TYPES.PLAYER },
+                { id: 'd', socketId: 'player-d', name: 'Cara', gameRole: 'Villager', alignment: 'good', assigned: true, out: false, killed: false, userType: USER_TYPES.PLAYER },
+                { id: 'e', socketId: 'player-e', name: 'Drew', gameRole: 'Werewolf', alignment: 'evil', assigned: true, out: false, killed: false, userType: USER_TYPES.PLAYER }
+            ];
+            game.enforcement.openVote = {
+                type: 'day',
+                round: 1,
+                status: 'open',
+                candidateIds: ['b', 'c', 'd', 'e'],
+                ballots: {
+                    b: { selections: ['b'], passed: false, submittedAt: new Date().toJSON() },
+                    c: { selections: [], passed: true, submittedAt: new Date().toJSON() },
+                    d: { selections: [], passed: true, submittedAt: new Date().toJSON() },
+                    e: { selections: [], passed: true, submittedAt: new Date().toJSON() }
+                }
+            };
+        });
+
+        it('should require the day-vote threshold for a normal kill resolution', async () => {
+            await Events.find((e) => e.id === EVENT_IDS.CLOSE_DAY_VOTE)
+                .stateChange(game, {}, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+
+            expect(game.enforcement.openVote.resolution.minimumVotesToEliminate).toEqual(2);
+            expect(game.enforcement.openVote.resolution.topScore).toEqual(1);
+            expect(game.enforcement.openVote.resolution.meetsEliminationThreshold).toBeFalse();
+
+            await Events.find((e) => e.id === EVENT_IDS.RESOLVE_DAY_VOTE)
+                .stateChange(game, { mode: 'kill' }, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+
+            expect(game.people.find((person) => person.id === 'b').out).toBeFalse();
+            expect(game.enforcement.openVote).not.toBeNull();
+        });
+
+        it('should let the moderator override and kill a lone leader below the threshold', async () => {
+            await Events.find((e) => e.id === EVENT_IDS.CLOSE_DAY_VOTE)
+                .stateChange(game, {}, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+
+            await Events.find((e) => e.id === EVENT_IDS.RESOLVE_DAY_VOTE)
+                .stateChange(game, { mode: 'killOverride' }, { gameManager: gameManager, requestingSocketId: 'moderator-socket' });
+
+            expect(game.people.find((person) => person.id === 'b').out).toBeTrue();
+            expect(game.enforcement.openVote).toBeNull();
+            expect(game.enforcement.publicHistory[game.enforcement.publicHistory.length - 1].text)
+                .toContain('falling short of the day-vote threshold');
         });
     });
 

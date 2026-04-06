@@ -290,7 +290,10 @@ function buildVoteHistoryEntry (game, vote, resolution) {
         leaders: resolution.leaders,
         winnerId: resolution.winnerId,
         winnerName: candidateNames[resolution.winnerId] || null,
-        tieBrokenBy: resolution.tieBrokenBy
+        tieBrokenBy: resolution.tieBrokenBy,
+        topScore: resolution.topScore,
+        minimumVotesToEliminate: resolution.minimumVotesToEliminate,
+        meetsEliminationThreshold: resolution.meetsEliminationThreshold
     };
 }
 
@@ -1037,11 +1040,13 @@ const Events = [
                 return;
             }
 
-            const { leaders } = vote.resolution;
+            const { leaders, meetsEliminationThreshold } = vote.resolution;
             let targetId = null;
-            if (socketArgs?.mode === 'kill' && leaders.length === 1) {
+            if (socketArgs?.mode === 'kill' && leaders.length === 1 && meetsEliminationThreshold) {
                 targetId = leaders[0];
-            } else if (socketArgs?.mode === 'randomTied' && leaders.length > 1) {
+            } else if (socketArgs?.mode === 'killOverride' && leaders.length === 1 && !meetsEliminationThreshold) {
+                targetId = leaders[0];
+            } else if (socketArgs?.mode === 'randomTied' && leaders.length > 1 && meetsEliminationThreshold) {
                 targetId = leaders[Math.floor(Math.random() * leaders.length)] || null;
             } else if (socketArgs?.mode === 'pass') {
                 addPublicHistoryEntry(game, { type: 'vote-pass', text: 'The moderator passed on the current day vote result.' });
@@ -1058,7 +1063,11 @@ const Events = [
             }
             addPublicHistoryEntry(game, {
                 type: 'vote-resolution',
-                text: target ? target.name + ' was eliminated by the day vote.' : 'The day vote resolved.'
+                text: target
+                    ? target.name + (meetsEliminationThreshold
+                        ? ' was eliminated by the day vote.'
+                        : ' was eliminated by moderator choice after falling short of the day-vote threshold.')
+                    : 'The day vote resolved.'
             });
             game.enforcement.openVote = null;
             maybeAutoEndGame(game);

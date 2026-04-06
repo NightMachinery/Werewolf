@@ -1127,22 +1127,31 @@ function buildModeratorEnforcementPanel (gameState, socket) {
         const resolveSection = document.createElement('div');
         resolveSection.classList.add('enforcement-subpanel');
         resolveSection.innerHTML = '<h4>Resolve closed day vote</h4>';
-        const leaders = gameState.enforcement.openVote.resolution?.leaders || [];
+        const resolution = gameState.enforcement.openVote.resolution || {};
+        const leaders = resolution.leaders || [];
+        const thresholdNotice = document.createElement('div');
+        thresholdNotice.classList.add('history-entry-details');
+        if (typeof resolution.minimumVotesToEliminate === 'number') {
+            thresholdNotice.innerText = `A player needs at least ${resolution.minimumVotesToEliminate} vote${resolution.minimumVotesToEliminate === 1 ? '' : 's'} to be killed by the day vote.`;
+        } else {
+            thresholdNotice.innerText = 'A moderator may kill or pass on the current day vote result.';
+        }
+        resolveSection.appendChild(thresholdNotice);
         if (leaders.length === 1) {
             const killButton = document.createElement('button');
             killButton.classList.add('app-button');
-            killButton.innerText = 'Kill ' + (getPersonById(gameState, leaders[0])?.name || 'leader');
+            killButton.innerText = (resolution.meetsEliminationThreshold ? 'Kill ' : 'Kill anyway: ') + (getPersonById(gameState, leaders[0])?.name || 'leader');
             killButton.addEventListener('click', () => {
                 socket.emit(
                     SOCKET_EVENTS.IN_GAME_MESSAGE,
                     EVENT_IDS.RESOLVE_DAY_VOTE,
                     gameState.accessCode,
-                    { mode: 'kill' }
+                    { mode: resolution.meetsEliminationThreshold ? 'kill' : 'killOverride' }
                 );
             });
             resolveSection.appendChild(killButton);
         }
-        if (leaders.length > 1) {
+        if (leaders.length > 1 && resolution.meetsEliminationThreshold) {
             const randomButton = document.createElement('button');
             randomButton.classList.add('app-button');
             randomButton.innerText = 'Randomly kill a tied leader';
@@ -1155,6 +1164,12 @@ function buildModeratorEnforcementPanel (gameState, socket) {
                 );
             });
             resolveSection.appendChild(randomButton);
+        }
+        if (leaders.length > 1 && !resolution.meetsEliminationThreshold) {
+            const tieNotice = document.createElement('div');
+            tieNotice.classList.add('history-entry-details');
+            tieNotice.innerText = 'No tied leader reached the vote threshold. Pass here, or use the regular moderator kill controls if you want to override the vote.';
+            resolveSection.appendChild(tieNotice);
         }
         const passButton = document.createElement('button');
         passButton.classList.add('app-button', 'cancel');
@@ -1258,6 +1273,11 @@ function renderHistoryEntry (entry, gameState) {
             line.innerText = `${total.candidateName}: ${total.count}`;
             totals.appendChild(line);
         });
+        if (typeof entry.minimumVotesToEliminate === 'number') {
+            const thresholdLine = document.createElement('div');
+            thresholdLine.innerText = `Threshold to kill by day vote: ${entry.minimumVotesToEliminate}`;
+            totals.appendChild(thresholdLine);
+        }
         container.appendChild(totals);
     }
 
@@ -1274,11 +1294,20 @@ function renderHistoryEntry (entry, gameState) {
 function renderVoteResolution (resolution, gameState) {
     const container = document.createElement('div');
     container.classList.add('history-entry');
+    const thresholdText = typeof resolution.minimumVotesToEliminate === 'number'
+        ? ` Need ${resolution.minimumVotesToEliminate}.`
+        : '';
     if (resolution.winnerId) {
         container.innerText = 'Current winner: ' + (getPersonById(gameState, resolution.winnerId)?.name || resolution.winnerId) +
-            (resolution.tieBrokenBy ? ' (tie broken by ' + resolution.tieBrokenBy + ')' : '');
+            (typeof resolution.topScore === 'number' ? ` with ${resolution.topScore} vote${resolution.topScore === 1 ? '' : 's'}.` : '.') +
+            (resolution.tieBrokenBy ? ' (tie broken by ' + resolution.tieBrokenBy + ')' : '') +
+            thresholdText;
+    } else if (resolution.leaders?.length) {
+        container.innerText = 'Current leaders are tied with ' +
+            (typeof resolution.topScore === 'number' ? resolution.topScore : 0) +
+            ' votes.' + thresholdText;
     } else {
-        container.innerText = 'No single winner yet.';
+        container.innerText = 'No single winner yet.' + thresholdText;
     }
     return container;
 }

@@ -224,6 +224,10 @@ function submitVote (vote, voterId, selections, passed) {
     };
 }
 
+function getDayVoteKillThreshold (game) {
+    return Math.max(1, Math.floor(livingVillageVoters(game).length / 2));
+}
+
 function tallyVote (game, vote) {
     const totals = {};
     for (const candidateId of vote.candidateIds) {
@@ -266,6 +270,19 @@ function tallyVote (game, vote) {
             leaders,
             winnerId: leaders[Math.floor(Math.random() * leaders.length)] || null,
             tieBrokenBy: 'random'
+        };
+    }
+
+    if (vote.type === VOTE_TYPES.DAY) {
+        const minimumVotesToEliminate = getDayVoteKillThreshold(game);
+        return {
+            totals,
+            leaders,
+            winnerId: leaders.length === 1 ? leaders[0] : null,
+            tieBrokenBy: null,
+            topScore: Math.max(0, topScore),
+            minimumVotesToEliminate,
+            meetsEliminationThreshold: topScore >= minimumVotesToEliminate
         };
     }
 
@@ -461,6 +478,7 @@ module.exports = {
     getLivingAlignmentCounts,
     getLivingParticipants,
     getLivingPlayers,
+    getDayVoteKillThreshold,
     getOpenVote,
     getVoteSelections,
     initializePersonRoleState,
