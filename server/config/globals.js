@@ -87,7 +87,16 @@ const EVENT_IDS = {
     UPDATE_GAME_ROLES: 'updateGameRoles',
     UPDATE_GAME_TIMER: 'updateGameTimer',
     LEAVE_ROOM: 'leaveRoom',
-    BROADCAST: 'broadcast'
+    BROADCAST: 'broadcast',
+    ADVANCE_PHASE: 'advancePhase',
+    START_DAY_VOTE: 'startDayVote',
+    SUBMIT_VOTE: 'submitVote',
+    CLOSE_DAY_VOTE: 'closeDayVote',
+    RESOLVE_DAY_VOTE: 'resolveDayVote',
+    SUBMIT_NIGHT_ACTION: 'submitNightAction',
+    SEND_EVIL_CHAT: 'sendEvilChat',
+    REVEAL_ALIGNMENT_COUNTS: 'revealAlignmentCounts',
+    REVIVE_PLAYER: 'revivePlayer'
 };
 
 const SYNCABLE_EVENTS = function () {
@@ -113,7 +122,16 @@ const SYNCABLE_EVENTS = function () {
         EVENT_IDS.KICK_PERSON,
         EVENT_IDS.UPDATE_GAME_ROLES,
         EVENT_IDS.UPDATE_GAME_TIMER,
-        EVENT_IDS.LEAVE_ROOM
+        EVENT_IDS.LEAVE_ROOM,
+        EVENT_IDS.ADVANCE_PHASE,
+        EVENT_IDS.START_DAY_VOTE,
+        EVENT_IDS.SUBMIT_VOTE,
+        EVENT_IDS.CLOSE_DAY_VOTE,
+        EVENT_IDS.RESOLVE_DAY_VOTE,
+        EVENT_IDS.SUBMIT_NIGHT_ACTION,
+        EVENT_IDS.SEND_EVIL_CHAT,
+        EVENT_IDS.REVEAL_ALIGNMENT_COUNTS,
+        EVENT_IDS.REVIVE_PLAYER
     ];
 };
 

@@ -18,6 +18,21 @@ export const hiddenMenus =
                 <label for="role-description">Description</label>
                 <textarea id="role-description" rows="4" cols="1" placeholder="Describe your role..." required></textarea>
             </div>
+            <div>
+                <label for="role-revealed-alignment">Revealed Alignment</label>
+                <select id="role-revealed-alignment" required>
+                    <option value="good">good</option>
+                    <option value="evil">evil</option>
+                    <option value="independent">independent</option>
+                </select>
+            </div>
+            <div>
+                <label for="role-evil-chat-access">Gets evil chat?</label>
+                <select id="role-evil-chat-access" required>
+                    <option value="false">no</option>
+                    <option value="true">yes</option>
+                </select>
+            </div>
             <div class="modal-button-container">
                 <button id="close-modal-button" class="cancel app-button">Close</button>
                 <input type="submit" id="create-role-button" value="Create Role"/>
@@ -39,6 +54,10 @@ export const hiddenMenus =
         <div id="custom-role-info-modal-image-placeholder"></div>
         <label>alignment:</label>
         <div id="custom-role-info-modal-alignment"></div>
+        <label>revealed alignment:</label>
+        <div id="custom-role-info-modal-revealed-alignment"></div>
+        <label>evil chat access:</label>
+        <div id="custom-role-info-modal-evil-chat"></div>
         <label>description:</label>
         <div id="custom-role-info-modal-description"></div>
         <div class="modal-button-container single-button">

@@ -83,7 +83,16 @@ export const EVENT_IDS = {
     KICK_PERSON: 'kickPerson',
     UPDATE_GAME_ROLES: 'updateGameRoles',
     UPDATE_GAME_TIMER: 'updateGameTimer',
-    LEAVE_ROOM: 'leaveRoom'
+    LEAVE_ROOM: 'leaveRoom',
+    ADVANCE_PHASE: 'advancePhase',
+    START_DAY_VOTE: 'startDayVote',
+    SUBMIT_VOTE: 'submitVote',
+    CLOSE_DAY_VOTE: 'closeDayVote',
+    RESOLVE_DAY_VOTE: 'resolveDayVote',
+    SUBMIT_NIGHT_ACTION: 'submitNightAction',
+    SEND_EVIL_CHAT: 'sendEvilChat',
+    REVEAL_ALIGNMENT_COUNTS: 'revealAlignmentCounts',
+    REVIVE_PLAYER: 'revivePlayer'
 };
 
 export const TIMER_EVENTS = function () {
@@ -112,6 +121,7 @@ export const IN_PROGRESS_EVENTS = function () {
         EVENT_IDS.KILL_PLAYER,
         EVENT_IDS.REVEAL_PLAYER,
         EVENT_IDS.ADD_SPECTATOR,
-        EVENT_IDS.KICK_PERSON
+        EVENT_IDS.KICK_PERSON,
+        EVENT_IDS.REVIVE_PLAYER
     ];
 };

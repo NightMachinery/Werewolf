@@ -11,6 +11,10 @@ class Person {
         this.gameRole = gameRole;
         this.gameRoleDescription = gameRoleDescription;
         this.alignment = alignment;
+        this.revealedAlignment = alignment;
+        this.customRole = false;
+        this.evilChatAccess = false;
+        this.roleState = {};
         this.assigned = assigned;
         this.out = userType === USER_TYPES.MODERATOR || userType === USER_TYPES.SPECTATOR;
         this.killed = false;

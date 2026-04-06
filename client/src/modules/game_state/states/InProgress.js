@@ -21,6 +21,7 @@ export class InProgress {
         this.killPlayerHandlers = {};
         this.revealRoleHandlers = {};
         this.transferModHandlers = {};
+        this.reviveHandlers = {};
     }
 
     setUserView (userType) {
@@ -95,6 +96,8 @@ export class InProgress {
             spectatorCount?.addEventListener('click', spectatorHandler);
             spectatorCount?.addEventListener('keyup', spectatorHandler);
         }
+
+        this.renderEnforcementPanels();
     }
 
     renderPlayerView (isKilled = false) {
@@ -151,6 +154,10 @@ export class InProgress {
             if (pointer && this.revealRoleHandlers[pointer]) {
                 el.removeEventListener('click', this.revealRoleHandlers[pointer]);
                 delete this.revealRoleHandlers[pointer];
+            }
+            if (pointer && this.reviveHandlers[pointer]) {
+                el.removeEventListener('click', this.reviveHandlers[pointer]);
+                delete this.reviveHandlers[pointer];
             }
             if (removeEl) {
                 el.remove();
@@ -393,12 +400,25 @@ export class InProgress {
                 playerEl.classList.add('killed');
                 if (moderatorType) {
                     playerEl.querySelector('.kill-player-button')?.remove();
-                    insertPlaceholderButton(playerEl, false, 'killed');
+                    if (this.stateBucket.currentGameState.enforcement?.enabled) {
+                        const reviveButton = document.createElement('button');
+                        reviveButton.classList.add('moderator-player-button', 'app-button');
+                        reviveButton.innerText = 'Revive';
+                        this.reviveHandlers[player.id] = () => {
+                            Confirmation('Revive \'' + player.name + '\'?', () => {
+                                socket.emit(SOCKET_EVENTS.IN_GAME_MESSAGE, EVENT_IDS.REVIVE_PLAYER, accessCode, { personId: player.id });
+                            });
+                        };
+                        reviveButton.addEventListener('click', this.reviveHandlers[player.id]);
+                        playerEl.querySelector('.player-action-buttons').prepend(reviveButton);
+                    } else {
+                        insertPlaceholderButton(playerEl, false, 'killed');
+                    }
                 }
             } else if (!player.out && moderatorType) {
                 killPlayerHandlers[player.id] = () => {
                     if (this.stateBucket.currentGameState.client.userType === USER_TYPES.TEMPORARY_MODERATOR) {
-                        displayTempModeratorKillChoice(player, accessCode, socket);
+                        displayTempModeratorKillChoice(player, accessCode, socket, this.stateBucket.currentGameState);
                     } else {
                         Confirmation('Kill \'' + player.name + '\'?', () => {
                             socket.emit(SOCKET_EVENTS.IN_GAME_MESSAGE, EVENT_IDS.KILL_PLAYER, accessCode, { personId: player.id });
@@ -483,6 +503,41 @@ export class InProgress {
             '../images/tombstone.png'
         );
     }
+
+    renderEnforcementPanels () {
+        document.getElementById('enforcement-root')?.remove();
+        if (!this.stateBucket.currentGameState.enforcement?.enabled) {
+            return;
+        }
+
+        const container = document.createElement('div');
+        container.id = 'enforcement-root';
+        container.classList.add('enforcement-root');
+        container.appendChild(buildEnforcementSummary(this.stateBucket.currentGameState));
+        container.appendChild(buildHistoryPanel(this.stateBucket.currentGameState));
+
+        const votePanel = buildVotePanel(this.stateBucket.currentGameState, this.socket);
+        if (votePanel) {
+            container.appendChild(votePanel);
+        }
+
+        const actionPanel = buildNightActionPanel(this.stateBucket.currentGameState, this.socket);
+        if (actionPanel) {
+            container.appendChild(actionPanel);
+        }
+
+        const evilPanel = buildEvilPanel(this.stateBucket.currentGameState, this.socket);
+        if (evilPanel) {
+            container.appendChild(evilPanel);
+        }
+
+        const moderatorPanel = buildModeratorEnforcementPanel(this.stateBucket.currentGameState, this.socket);
+        if (moderatorPanel) {
+            container.appendChild(moderatorPanel);
+        }
+
+        this.container.appendChild(container);
+    }
 }
 
 function renderPlayerRole (gameState) {
@@ -524,6 +579,12 @@ function renderPlayerRole (gameState) {
                 );
             }
         }
+        document.getElementById('role-image').onerror = () => {
+            document.getElementById('role-image').setAttribute(
+                'src',
+                '../images/roles/custom-role.svg'
+            );
+        };
     }
 
     document.querySelector('#role-description').innerText = gameState.client.gameRoleDescription;
@@ -655,7 +716,7 @@ function insertModeratorControlButton (gameState, socket) {
     }
 }
 
-function displayTempModeratorKillChoice (player, accessCode, socket) {
+function displayTempModeratorKillChoice (player, accessCode, socket, gameState) {
     document.querySelector('#player-options-modal-title').innerText = `Kill ${player.name}`;
     const modalContent = document.getElementById('player-options-modal-content');
     modalContent.innerHTML = '';
@@ -673,21 +734,22 @@ function displayTempModeratorKillChoice (player, accessCode, socket) {
         );
     });
 
-    const dedicatedModOption = document.createElement('button');
-    dedicatedModOption.setAttribute('class', 'player-option');
-    dedicatedModOption.innerText = 'Kill + Make Dedicated Mod';
-    dedicatedModOption.addEventListener('click', () => {
-        ModalManager.dispelModal('player-options-modal', 'player-options-modal-background');
-        socket.emit(
-            SOCKET_EVENTS.IN_GAME_MESSAGE,
-            EVENT_IDS.ASSIGN_DEDICATED_MOD,
-            accessCode,
-            { personId: player.id }
-        );
-    });
-
     modalContent.appendChild(justKillOption);
-    modalContent.appendChild(dedicatedModOption);
+    if (!gameState.enforcement?.enabled) {
+        const dedicatedModOption = document.createElement('button');
+        dedicatedModOption.setAttribute('class', 'player-option');
+        dedicatedModOption.innerText = 'Kill + Make Dedicated Mod';
+        dedicatedModOption.addEventListener('click', () => {
+            ModalManager.dispelModal('player-options-modal', 'player-options-modal-background');
+            socket.emit(
+                SOCKET_EVENTS.IN_GAME_MESSAGE,
+                EVENT_IDS.ASSIGN_DEDICATED_MOD,
+                accessCode,
+                { personId: player.id }
+            );
+        });
+        modalContent.appendChild(dedicatedModOption);
+    }
     ModalManager.displayModal(
         'player-options-modal',
         'player-options-modal-background',
@@ -749,4 +811,510 @@ function renderPotentialMods (gameState, group, transferModHandlers, socket) {
             modalContent.appendChild(container);
         }
     }
+}
+
+function buildEnforcementSummary (gameState) {
+    const enforcement = gameState.enforcement;
+    const container = document.createElement('section');
+    container.classList.add('enforcement-panel');
+    const deadVoteTimer = enforcement.openVote?.deadVoteWindowEndsAt
+        ? ' | dead-voter timer: ' + formatCountdown(enforcement.openVote.deadVoteWindowEndsAt)
+        : '';
+    container.innerHTML =
+        `<h3>Enforced Game Logic</h3>
+        <div>Phase: ${enforcement.phase} | Day ${enforcement.dayNumber} | Night ${enforcement.nightNumber}${deadVoteTimer}</div>
+        <div>Count reveals used: ${enforcement.countRevealUses}${gameState.settings?.maxAlignmentCountReveals !== null ? '/' + gameState.settings.maxAlignmentCountReveals : ''}</div>`;
+
+    if (enforcement.privateNotices?.length > 0) {
+        const noticeList = document.createElement('div');
+        noticeList.classList.add('enforcement-subpanel');
+        noticeList.innerHTML = '<h4>Private notices</h4>';
+        for (const notice of enforcement.privateNotices.slice().reverse()) {
+            const item = document.createElement('div');
+            item.classList.add('history-entry');
+            item.innerText = notice.message;
+            noticeList.appendChild(item);
+        }
+        container.appendChild(noticeList);
+    }
+
+    return container;
+}
+
+function buildHistoryPanel (gameState) {
+    const panel = document.createElement('section');
+    panel.classList.add('enforcement-panel');
+    panel.innerHTML = '<h3>History</h3>';
+
+    if (!gameState.enforcement.publicHistory.length) {
+        const empty = document.createElement('div');
+        empty.innerText = 'No public history yet.';
+        panel.appendChild(empty);
+        return panel;
+    }
+
+    const list = document.createElement('div');
+    list.classList.add('history-list');
+    for (const entry of gameState.enforcement.publicHistory.slice().reverse()) {
+        list.appendChild(renderHistoryEntry(entry, gameState));
+    }
+    panel.appendChild(list);
+    return panel;
+}
+
+function buildVotePanel (gameState, socket) {
+    const vote = gameState.enforcement.openVote;
+    if (!vote) {
+        return null;
+    }
+
+    const panel = document.createElement('section');
+    panel.classList.add('enforcement-panel');
+    panel.innerHTML = `<h3>${vote.type === 'day' ? 'Day vote' : 'Night vote'}</h3>`;
+
+    if (vote.status === 'open' && clientCanVote(gameState, vote)) {
+        const form = document.createElement('div');
+        form.classList.add('vote-form');
+        const currentSelections = new Set(vote.yourBallot?.selections || []);
+        for (const candidateId of vote.candidateIds) {
+            const candidate = getPersonById(gameState, candidateId);
+            const label = document.createElement('label');
+            label.classList.add('checkbox-label');
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.value = candidateId;
+            checkbox.checked = currentSelections.has(candidateId);
+            label.appendChild(checkbox);
+            label.appendChild(document.createTextNode(candidate?.name || candidateId));
+            form.appendChild(label);
+        }
+        const submitButton = document.createElement('button');
+        submitButton.classList.add('app-button');
+        submitButton.innerText = 'Submit Vote';
+        submitButton.addEventListener('click', () => {
+            const selections = Array.from(form.querySelectorAll('input[type="checkbox"]:checked')).map((el) => el.value);
+            socket.emit(
+                SOCKET_EVENTS.IN_GAME_MESSAGE,
+                EVENT_IDS.SUBMIT_VOTE,
+                gameState.accessCode,
+                { selections, passed: false }
+            );
+        });
+        const passButton = document.createElement('button');
+        passButton.classList.add('app-button', 'cancel');
+        passButton.innerText = 'Pass';
+        passButton.addEventListener('click', () => {
+            socket.emit(
+                SOCKET_EVENTS.IN_GAME_MESSAGE,
+                EVENT_IDS.SUBMIT_VOTE,
+                gameState.accessCode,
+                { selections: [], passed: true }
+            );
+        });
+        panel.appendChild(form);
+        panel.appendChild(submitButton);
+        panel.appendChild(passButton);
+    } else {
+        const info = document.createElement('div');
+        info.innerText = vote.status === 'open'
+            ? 'Voting is open.'
+            : 'Voting is closed.';
+        panel.appendChild(info);
+    }
+
+    if (vote.resolution) {
+        panel.appendChild(renderVoteResolution(vote.resolution, gameState));
+    }
+
+    return panel;
+}
+
+function buildNightActionPanel (gameState, socket) {
+    const enforcement = gameState.enforcement;
+    if (enforcement.phase !== 'night') {
+        return null;
+    }
+
+    const panel = document.createElement('section');
+    panel.classList.add('enforcement-panel');
+    panel.innerHTML = '<h3>Night Actions</h3>';
+    const client = gameState.client;
+    const livingTargets = gameState.people.filter((person) => !person.out && person.id !== client.id);
+    let hasContent = false;
+
+    const appendTargetButtons = (title, actionType, includeSelf = false) => {
+        const section = document.createElement('div');
+        section.classList.add('enforcement-subpanel');
+        section.innerHTML = `<h4>${title}</h4>`;
+        const targets = includeSelf ? gameState.people.filter((person) => !person.out) : livingTargets;
+        for (const target of targets) {
+            const button = document.createElement('button');
+            button.classList.add('app-button');
+            button.innerText = target.name;
+            button.addEventListener('click', () => {
+                socket.emit(
+                    SOCKET_EVENTS.IN_GAME_MESSAGE,
+                    EVENT_IDS.SUBMIT_NIGHT_ACTION,
+                    gameState.accessCode,
+                    { actionType, targetId: target.id }
+                );
+            });
+            section.appendChild(button);
+        }
+        panel.appendChild(section);
+        hasContent = true;
+    };
+
+    if (!client.out) {
+        if (client.gameRole === 'Seer' || client.gameRole === 'Super Seer') {
+            appendTargetButtons('Inspect a player', 'inspect');
+        }
+        if (client.gameRole === 'Sorceress') {
+            appendTargetButtons('Sense the seer family', 'senseSeer');
+        }
+        if (client.gameRole === 'Doctor') {
+            appendTargetButtons('Protect a player', 'protect', true);
+        }
+        if (client.gameRole === 'Witch') {
+            if (!client.roleState?.witchHealUsed) {
+                appendTargetButtons('Use heal potion', 'heal', true);
+            }
+            if (!client.roleState?.witchPoisonUsed) {
+                appendTargetButtons('Use poison potion', 'poison');
+            }
+        }
+    }
+
+    if (enforcement.activeHunterPrompt && (enforcement.activeHunterPrompt.hunterId === client.id || isModeratorClient(gameState))) {
+        appendHunterPrompt(panel, enforcement.activeHunterPrompt, gameState, socket);
+        hasContent = true;
+    }
+
+    return hasContent ? panel : null;
+}
+
+function buildEvilPanel (gameState, socket) {
+    const enforcement = gameState.enforcement;
+    if (
+        (!enforcement.evilHistory || enforcement.evilHistory.length === 0)
+        && (!enforcement.evilChat || enforcement.evilChat.length === 0)
+        && (!enforcement.evilRoster || enforcement.evilRoster.length === 0)
+    ) {
+        return null;
+    }
+
+    const panel = document.createElement('section');
+    panel.classList.add('enforcement-panel');
+    panel.innerHTML = '<h3>Evil Team</h3>';
+
+    if (enforcement.evilRoster?.length > 0) {
+        const roster = document.createElement('div');
+        roster.classList.add('enforcement-subpanel');
+        roster.innerHTML = '<h4>Roster</h4>';
+        enforcement.evilRoster.forEach((member) => {
+            const el = document.createElement('div');
+            el.innerText = member.name + (member.out ? ' ☠' : '');
+            roster.appendChild(el);
+        });
+        panel.appendChild(roster);
+    }
+
+    if (enforcement.evilHistory?.length > 0) {
+        const history = document.createElement('div');
+        history.classList.add('enforcement-subpanel');
+        history.innerHTML = '<h4>Private evil history</h4>';
+        enforcement.evilHistory.slice().reverse().forEach((entry) => {
+            history.appendChild(renderHistoryEntry(entry, gameState));
+        });
+        panel.appendChild(history);
+    }
+
+    if (enforcement.phase === 'night' && enforcement.evilChat) {
+        const chat = document.createElement('div');
+        chat.classList.add('enforcement-subpanel');
+        chat.innerHTML = '<h4>Evil chat</h4>';
+        const messages = document.createElement('div');
+        enforcement.evilChat.slice().reverse().forEach((entry) => {
+            const line = document.createElement('div');
+            line.classList.add('history-entry');
+            line.innerText = entry.senderName + ': ' + entry.message;
+            messages.appendChild(line);
+        });
+        chat.appendChild(messages);
+        if (gameState.client.evilChatAccess) {
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.placeholder = 'Send a message...';
+            const sendButton = document.createElement('button');
+            sendButton.classList.add('app-button');
+            sendButton.innerText = 'Send';
+            sendButton.addEventListener('click', () => {
+                socket.emit(
+                    SOCKET_EVENTS.IN_GAME_MESSAGE,
+                    EVENT_IDS.SEND_EVIL_CHAT,
+                    gameState.accessCode,
+                    { message: input.value }
+                );
+                input.value = '';
+            });
+            chat.appendChild(input);
+            chat.appendChild(sendButton);
+        }
+        panel.appendChild(chat);
+    }
+
+    return panel;
+}
+
+function buildModeratorEnforcementPanel (gameState, socket) {
+    if (!isModeratorClient(gameState) || !gameState.enforcement?.enabled) {
+        return null;
+    }
+
+    const panel = document.createElement('section');
+    panel.classList.add('enforcement-panel');
+    panel.innerHTML = '<h3>Moderator Logic Controls</h3>';
+
+    const advanceButton = document.createElement('button');
+    advanceButton.classList.add('app-button');
+    advanceButton.innerText = gameState.enforcement.phase === 'day' ? 'Begin Night' : 'Begin Day';
+    advanceButton.addEventListener('click', () => {
+        socket.emit(SOCKET_EVENTS.IN_GAME_MESSAGE, EVENT_IDS.ADVANCE_PHASE, gameState.accessCode);
+    });
+    panel.appendChild(advanceButton);
+
+    if (gameState.enforcement.phase === 'day' && !gameState.enforcement.openVote && (gameState.settings?.allowFirstDayVillageVote || gameState.enforcement.dayNumber > 1)) {
+        const picker = document.createElement('div');
+        picker.classList.add('enforcement-subpanel');
+        picker.innerHTML = '<h4>Start day vote</h4>';
+        for (const person of gameState.people.filter((entry) => !entry.out)) {
+            const label = document.createElement('label');
+            label.classList.add('checkbox-label');
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.value = person.id;
+            label.appendChild(checkbox);
+            label.appendChild(document.createTextNode(person.name));
+            picker.appendChild(label);
+        }
+        const startVoteButton = document.createElement('button');
+        startVoteButton.classList.add('app-button');
+        startVoteButton.innerText = 'Start Day Vote';
+        startVoteButton.addEventListener('click', () => {
+            const candidateIds = Array.from(picker.querySelectorAll('input[type="checkbox"]:checked')).map((el) => el.value);
+            socket.emit(
+                SOCKET_EVENTS.IN_GAME_MESSAGE,
+                EVENT_IDS.START_DAY_VOTE,
+                gameState.accessCode,
+                { candidateIds }
+            );
+        });
+        picker.appendChild(startVoteButton);
+        panel.appendChild(picker);
+    }
+
+    if (gameState.enforcement.openVote?.type === 'day' && gameState.enforcement.openVote.status === 'open') {
+        const closeVoteButton = document.createElement('button');
+        closeVoteButton.classList.add('app-button');
+        closeVoteButton.innerText = 'Close Day Vote';
+        closeVoteButton.addEventListener('click', () => {
+            socket.emit(SOCKET_EVENTS.IN_GAME_MESSAGE, EVENT_IDS.CLOSE_DAY_VOTE, gameState.accessCode);
+        });
+        panel.appendChild(closeVoteButton);
+    }
+
+    if (gameState.enforcement.openVote?.type === 'day' && gameState.enforcement.openVote.status === 'closed') {
+        const resolveSection = document.createElement('div');
+        resolveSection.classList.add('enforcement-subpanel');
+        resolveSection.innerHTML = '<h4>Resolve closed day vote</h4>';
+        const leaders = gameState.enforcement.openVote.resolution?.leaders || [];
+        if (leaders.length === 1) {
+            const killButton = document.createElement('button');
+            killButton.classList.add('app-button');
+            killButton.innerText = 'Kill ' + (getPersonById(gameState, leaders[0])?.name || 'leader');
+            killButton.addEventListener('click', () => {
+                socket.emit(
+                    SOCKET_EVENTS.IN_GAME_MESSAGE,
+                    EVENT_IDS.RESOLVE_DAY_VOTE,
+                    gameState.accessCode,
+                    { mode: 'kill' }
+                );
+            });
+            resolveSection.appendChild(killButton);
+        }
+        if (leaders.length > 1) {
+            const randomButton = document.createElement('button');
+            randomButton.classList.add('app-button');
+            randomButton.innerText = 'Randomly kill a tied leader';
+            randomButton.addEventListener('click', () => {
+                socket.emit(
+                    SOCKET_EVENTS.IN_GAME_MESSAGE,
+                    EVENT_IDS.RESOLVE_DAY_VOTE,
+                    gameState.accessCode,
+                    { mode: 'randomTied' }
+                );
+            });
+            resolveSection.appendChild(randomButton);
+        }
+        const passButton = document.createElement('button');
+        passButton.classList.add('app-button', 'cancel');
+        passButton.innerText = 'Pass / clear current vote';
+        passButton.addEventListener('click', () => {
+            socket.emit(
+                SOCKET_EVENTS.IN_GAME_MESSAGE,
+                EVENT_IDS.RESOLVE_DAY_VOTE,
+                gameState.accessCode,
+                { mode: 'pass' }
+            );
+        });
+        resolveSection.appendChild(passButton);
+        panel.appendChild(resolveSection);
+    }
+
+    const revealCountsButton = document.createElement('button');
+    revealCountsButton.classList.add('app-button');
+    revealCountsButton.innerText = 'Reveal Alignment Counts';
+    revealCountsButton.addEventListener('click', () => {
+        const uses = gameState.enforcement.countRevealUses;
+        const maxText = gameState.settings?.maxAlignmentCountReveals === null ? '' : '/' + gameState.settings.maxAlignmentCountReveals;
+        Confirmation(
+            `Reveal the current alignment counts? This has been used ${uses}${maxText} times so far.`,
+            () => {
+                socket.emit(
+                    SOCKET_EVENTS.IN_GAME_MESSAGE,
+                    EVENT_IDS.REVEAL_ALIGNMENT_COUNTS,
+                    gameState.accessCode
+                );
+            }
+        );
+    });
+    panel.appendChild(revealCountsButton);
+
+    return panel;
+}
+
+function appendHunterPrompt (panel, hunterPrompt, gameState, socket) {
+    const section = document.createElement('div');
+    section.classList.add('enforcement-subpanel');
+    section.innerHTML = '<h4>Brutal Hunter retaliation</h4>';
+    for (const targetId of hunterPrompt.eligibleTargetIds) {
+        const target = getPersonById(gameState, targetId);
+        if (!target || target.out) {
+            continue;
+        }
+        const button = document.createElement('button');
+        button.classList.add('app-button');
+        button.innerText = target.name;
+        button.addEventListener('click', () => {
+            socket.emit(
+                SOCKET_EVENTS.IN_GAME_MESSAGE,
+                EVENT_IDS.SUBMIT_NIGHT_ACTION,
+                gameState.accessCode,
+                { actionType: 'brutalTarget', targetId: target.id }
+            );
+        });
+        section.appendChild(button);
+    }
+    if (isModeratorClient(gameState) || hunterPrompt.hunterId === gameState.client.id) {
+        const passButton = document.createElement('button');
+        passButton.classList.add('app-button', 'cancel');
+        passButton.innerText = 'Pass';
+        passButton.addEventListener('click', () => {
+            socket.emit(
+                SOCKET_EVENTS.IN_GAME_MESSAGE,
+                EVENT_IDS.SUBMIT_NIGHT_ACTION,
+                gameState.accessCode,
+                { actionType: 'brutalTarget', passed: true }
+            );
+        });
+        section.appendChild(passButton);
+    }
+    panel.appendChild(section);
+}
+
+function renderHistoryEntry (entry, gameState) {
+    const container = document.createElement('div');
+    container.classList.add('history-entry');
+    const text = document.createElement('div');
+    text.innerText = entry.text || entry.message || entry.type;
+    container.appendChild(text);
+
+    if (entry.ballots) {
+        const ballots = document.createElement('div');
+        ballots.classList.add('history-entry-details');
+        entry.ballots.forEach((ballot) => {
+            const line = document.createElement('div');
+            line.innerText = ballot.voterName + ': ' + (ballot.passed ? 'pass' : ballot.selectionNames.join(', '));
+            ballots.appendChild(line);
+        });
+        container.appendChild(ballots);
+    }
+
+    if (entry.totals) {
+        const totals = document.createElement('div');
+        totals.classList.add('history-entry-details');
+        entry.totals.forEach((total) => {
+            const line = document.createElement('div');
+            line.innerText = `${total.candidateName}: ${total.count}`;
+            totals.appendChild(line);
+        });
+        container.appendChild(totals);
+    }
+
+    if (entry.counts) {
+        const counts = document.createElement('div');
+        counts.classList.add('history-entry-details');
+        counts.innerText = `good: ${entry.counts.good}, evil: ${entry.counts.evil}, independent: ${entry.counts.independent}`;
+        container.appendChild(counts);
+    }
+
+    return container;
+}
+
+function renderVoteResolution (resolution, gameState) {
+    const container = document.createElement('div');
+    container.classList.add('history-entry');
+    if (resolution.winnerId) {
+        container.innerText = 'Current winner: ' + (getPersonById(gameState, resolution.winnerId)?.name || resolution.winnerId) +
+            (resolution.tieBrokenBy ? ' (tie broken by ' + resolution.tieBrokenBy + ')' : '');
+    } else {
+        container.innerText = 'No single winner yet.';
+    }
+    return container;
+}
+
+function clientCanVote (gameState, vote) {
+    const client = gameState.client;
+    if (vote.type === 'day') {
+        return !client.out && client.userType !== USER_TYPES.SPECTATOR && client.userType !== USER_TYPES.MODERATOR;
+    }
+    if (client.alignment !== ALIGNMENT.EVIL || client.roleState?.asleep) {
+        return false;
+    }
+    if (!client.out) {
+        return true;
+    }
+    return Boolean(vote.deadVoteWindowEndsAt && new Date(vote.deadVoteWindowEndsAt).getTime() > Date.now());
+}
+
+function getPersonById (gameState, personId) {
+    if (gameState.client.id === personId) {
+        return gameState.client;
+    }
+    return gameState.people.find((person) => person.id === personId) || null;
+}
+
+function isModeratorClient (gameState) {
+    return gameState.client.userType === USER_TYPES.MODERATOR || gameState.client.userType === USER_TYPES.TEMPORARY_MODERATOR;
+}
+
+function formatCountdown (endsAt) {
+    const millis = new Date(endsAt).getTime() - Date.now();
+    if (millis <= 0) {
+        return '00:00';
+    }
+    const totalSeconds = Math.ceil(millis / 1000);
+    const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+    const seconds = String(totalSeconds % 60).padStart(2, '0');
+    return `${minutes}:${seconds}`;
 }

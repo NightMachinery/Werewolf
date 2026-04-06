@@ -49,6 +49,8 @@ export class RoleBox {
                     id: createRandomId(),
                     role: roleObj.role,
                     team: roleObj.team,
+                    revealedAlignment: roleObj.revealedAlignment || roleObj.team,
+                    evilChatAccess: Boolean(roleObj.evilChatAccess),
                     description: roleObj.description,
                     custom: true
                 };
@@ -74,6 +76,8 @@ export class RoleBox {
                         id: createRandomId(),
                         role: roleObj.role,
                         team: roleObj.team,
+                        revealedAlignment: roleObj.revealedAlignment || roleObj.team,
+                        evilChatAccess: Boolean(roleObj.evilChatAccess),
                         description: roleObj.description,
                         custom: true
                     };
@@ -278,9 +282,13 @@ export class RoleBox {
                     if (e.type === 'click' || e.code === 'Enter') {
                         const alignmentEl = document.getElementById('custom-role-info-modal-alignment');
                         const nameEl = document.getElementById('custom-role-info-modal-name');
+                        const revealedAlignmentEl = document.getElementById('custom-role-info-modal-revealed-alignment');
                         alignmentEl.classList.remove(ALIGNMENT.GOOD);
                         alignmentEl.classList.remove(ALIGNMENT.EVIL);
                         alignmentEl.classList.remove(ALIGNMENT.INDEPENDENT);
+                        revealedAlignmentEl.classList.remove(ALIGNMENT.GOOD);
+                        revealedAlignmentEl.classList.remove(ALIGNMENT.EVIL);
+                        revealedAlignmentEl.classList.remove(ALIGNMENT.INDEPENDENT);
                         nameEl.classList.remove(ALIGNMENT.GOOD);
                         nameEl.classList.remove(ALIGNMENT.EVIL);
                         nameEl.classList.remove(ALIGNMENT.INDEPENDENT);
@@ -302,12 +310,18 @@ export class RoleBox {
                             } else {
                                 roleImg.src = '../images/roles/' + name.replaceAll(' ', '') + '.png';
                             }
+                            roleImg.onerror = () => {
+                                roleImg.src = '../images/roles/custom-role.svg';
+                            };
                         }
                         nameEl.innerText = name;
                         nameEl.classList.add(role.team);
                         alignmentEl.classList.add(role.team);
+                        revealedAlignmentEl.classList.add(role.revealedAlignment || role.team);
                         document.getElementById('custom-role-info-modal-description').innerText = role.description;
                         alignmentEl.innerText = role.team;
+                        revealedAlignmentEl.innerText = role.revealedAlignment || role.team;
+                        document.getElementById('custom-role-info-modal-evil-chat').innerText = role.evilChatAccess ? 'yes' : 'no';
                         ModalManager.displayModal('custom-role-info-modal', 'modal-background', 'close-custom-role-info-modal-button');
                     }
                 };
@@ -323,6 +337,8 @@ export class RoleBox {
                         document.getElementById('role-name').value = entry.role;
                         document.getElementById('role-alignment').value = entry.team;
                         document.getElementById('role-description').value = entry.description;
+                        document.getElementById('role-revealed-alignment').value = entry.revealedAlignment || entry.team;
+                        document.getElementById('role-evil-chat-access').value = entry.evilChatAccess ? 'true' : 'false';
                         this.createMode = false;
                         this.currentlyEditingRoleName = entry.role;
                         const createBtn = document.getElementById('create-role-button');
@@ -358,10 +374,12 @@ export class RoleBox {
         localStorage.setItem('play-werewolf-custom-roles', JSON.stringify(this.customRoles));
     }
 
-    updateCustomRole (entry, name, description, team) {
+    updateCustomRole (entry, name, description, team, revealedAlignment, evilChatAccess) {
         entry.role = name;
         entry.description = description;
         entry.team = team;
+        entry.revealedAlignment = revealedAlignment;
+        entry.evilChatAccess = evilChatAccess;
         this.deckManager.updateDeckStatus();
         localStorage.setItem('play-werewolf-custom-roles', JSON.stringify(this.customRoles));
     }
@@ -392,7 +410,12 @@ function validateCustomRoleCookie (cookie) {
                     if (entry !== null && typeof entry === 'object') {
                         if (typeof entry.role !== 'string' || entry.role.length > PRIMITIVES.MAX_CUSTOM_ROLE_NAME_LENGTH
                             || typeof entry.team !== 'string' || (entry.team !== ALIGNMENT.GOOD && entry.team !== ALIGNMENT.EVIL && entry.team !== ALIGNMENT.INDEPENDENT)
+                            || (entry.revealedAlignment
+                                && entry.revealedAlignment !== ALIGNMENT.GOOD
+                                && entry.revealedAlignment !== ALIGNMENT.EVIL
+                                && entry.revealedAlignment !== ALIGNMENT.INDEPENDENT)
                             || typeof entry.description !== 'string' || entry.description.length > PRIMITIVES.MAX_CUSTOM_ROLE_DESCRIPTION_LENGTH
+                            || (Object.keys(entry).includes('evilChatAccess') && typeof entry.evilChatAccess !== 'boolean')
                         ) {
                             return false;
                         }

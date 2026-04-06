@@ -10,6 +10,13 @@ export class GameCreationStepManager {
     constructor (deckManager) {
         this.step = 1;
         this.currentGame = new Game(null, null, null, null);
+        this.currentGame.settings = {
+            enforcementEnabled: false,
+            allowFirstDayVillageVote: false,
+            allowNightKillVote: true,
+            evilVoteHistoryLimit: null,
+            maxAlignmentCountReveals: null
+        };
         this.deckManager = deckManager;
         this.roleBox = null;
         this.defaultBackHandler = () => {
@@ -66,6 +73,13 @@ export class GameCreationStepManager {
                                 this.currentGame.hasTimer = false;
                                 this.currentGame.timerParams = null;
                             }
+                            this.currentGame.settings = {
+                                enforcementEnabled: document.getElementById('enable-enforcement').checked,
+                                allowFirstDayVillageVote: document.getElementById('allow-first-day-vote').checked,
+                                allowNightKillVote: document.getElementById('allow-night-vote').checked,
+                                evilVoteHistoryLimit: this.standardizePositiveNumberInput(parseInt(document.getElementById('evil-history-round-limit').value)),
+                                maxAlignmentCountReveals: this.standardizeNonNegativeNumberInput(parseInt(document.getElementById('max-count-reveals').value))
+                            };
                             cancelCurrentToast();
                             this.removeStepElementsFromDOM(this.step);
                             this.incrementStep();
@@ -122,7 +136,8 @@ export class GameCreationStepManager {
                                     this.currentGame.hasDedicatedModerator,
                                     this.currentGame.moderatorName,
                                     this.currentGame.timerParams,
-                                    this.currentGame.isTestGame
+                                    this.currentGame.isTestGame,
+                                    this.currentGame.settings
                                 )
                             )
                         }).catch((e) => {
@@ -232,7 +247,14 @@ export class GameCreationStepManager {
                 this.roleBox.downloadCustomRoles('play-werewolf-custom-roles', JSON.stringify(
                     this.roleBox.customRoles
                         .map((option) => (
-                            { role: option.role, team: option.team, description: option.description, custom: option.custom }
+                            {
+                                role: option.role,
+                                team: option.team,
+                                revealedAlignment: option.revealedAlignment || option.team,
+                                evilChatAccess: Boolean(option.evilChatAccess),
+                                description: option.description,
+                                custom: option.custom
+                            }
                         ))
                 ));
                 toast('Custom roles downloading', 'success', true, true);
@@ -320,7 +342,39 @@ export class GameCreationStepManager {
         timeContainer.appendChild(minutesDiv);
         div.appendChild(timeContainer);
 
+        const settingsContainer = document.createElement('div');
+        settingsContainer.id = 'logic-settings';
+        settingsContainer.innerHTML =
+            `<h3>Optional logic enforcement</h3>
+            <label class="checkbox-label" for="enable-enforcement">
+                <input type="checkbox" id="enable-enforcement"/>
+                Enforce more game logic in the app
+            </label>
+            <label class="checkbox-label" for="allow-first-day-vote">
+                <input type="checkbox" id="allow-first-day-vote"/>
+                Allow village voting on the first day
+            </label>
+            <label class="checkbox-label" for="allow-night-vote">
+                <input type="checkbox" id="allow-night-vote"/>
+                Allow evil night voting
+            </label>
+            <div>
+                <label for="evil-history-round-limit">Visible evil vote rounds in log (blank = all)</label>
+                <input type="number" id="evil-history-round-limit" min="1" max="100"/>
+            </div>
+            <div>
+                <label for="max-count-reveals">Max alignment-count reveals (blank = uncapped)</label>
+                <input type="number" id="max-count-reveals" min="0" max="100"/>
+            </div>`;
+        div.appendChild(settingsContainer);
+
         document.getElementById(containerId).appendChild(div);
+
+        document.getElementById('enable-enforcement').checked = Boolean(game.settings?.enforcementEnabled);
+        document.getElementById('allow-first-day-vote').checked = Boolean(game.settings?.allowFirstDayVillageVote);
+        document.getElementById('allow-night-vote').checked = game.settings?.allowNightKillVote !== false;
+        document.getElementById('evil-history-round-limit').value = game.settings?.evilVoteHistoryLimit ?? '';
+        document.getElementById('max-count-reveals').value = game.settings?.maxAlignmentCountReveals ?? '';
     }
 
     timerIsValid (hours, minutes) {
@@ -347,6 +401,14 @@ export class GameCreationStepManager {
 
     standardizeNumberInput (input) {
         return (isNaN(input) || input === 0) ? null : input;
+    }
+
+    standardizePositiveNumberInput (input) {
+        return (isNaN(input) || input <= 0) ? null : input;
+    }
+
+    standardizeNonNegativeNumberInput (input) {
+        return isNaN(input) || input < 0 ? null : input;
     }
 }
 
@@ -432,6 +494,10 @@ function renderReviewAndCreateStep (containerId, stepNumber, game, deckManager) 
             "<div id='timer-option' class='review-option'></div>" +
         '</div>' +
         '<div>' +
+            "<label for='logic-option'>Logic Enforcement:</label>" +
+            "<div id='logic-option' class='review-option'></div>" +
+        '</div>' +
+        '<div>' +
             "<label id='roles-option-label' for='roles-option'>Game Deck:</label>" +
             "<div id='roles-option' class='review-option'>No cards selected.</div>" +
         '</div>';
@@ -455,6 +521,14 @@ function renderReviewAndCreateStep (containerId, stepNumber, game, deckManager) 
     } else {
         div.querySelector('#timer-option').innerText = 'untimed';
     }
+
+    const settings = game.settings || {};
+    div.querySelector('#logic-option').innerText = settings.enforcementEnabled
+        ? 'Enabled | first day vote: ' + (settings.allowFirstDayVillageVote ? 'yes' : 'no') +
+            ' | night vote: ' + (settings.allowNightKillVote ? 'yes' : 'no') +
+            ' | evil history: ' + (settings.evilVoteHistoryLimit === null ? 'all' : 'last ' + settings.evilVoteHistoryLimit) +
+            ' | count reveals: ' + (settings.maxAlignmentCountReveals === null ? 'uncapped' : settings.maxAlignmentCountReveals)
+        : 'Disabled';
 
     if (game.deck.length > 0) {
         div.querySelector('#roles-option').innerText = '';
@@ -536,19 +610,21 @@ function initializeRemainingEventListeners (deckManager, roleBox) {
         const name = document.getElementById('role-name').value.trim();
         const description = document.getElementById('role-description').value.trim();
         const team = document.getElementById('role-alignment').value.toLowerCase().trim();
+        const revealedAlignment = document.getElementById('role-revealed-alignment').value.toLowerCase().trim();
+        const evilChatAccess = document.getElementById('role-evil-chat-access').value === 'true';
         if (roleBox.createMode) {
             if (!roleBox.getCustomRole(name) && !roleBox.getDefaultRole(name)) { // confirm there is no existing custom role with the same name
-                processNewCustomRoleSubmission(name, description, team, deckManager, false, roleBox);
+                processNewCustomRoleSubmission(name, description, team, revealedAlignment, evilChatAccess, deckManager, false, roleBox);
             } else {
                 toast('There is already a default or custom role with this name', 'error', true, true, 'short');
             }
         } else {
             const entry = roleBox.getCustomRole(roleBox.currentlyEditingRoleName);
             if (name === entry.role) { // did they edit the name?
-                processNewCustomRoleSubmission(name, description, team, deckManager, true, roleBox, entry);
+                processNewCustomRoleSubmission(name, description, team, revealedAlignment, evilChatAccess, deckManager, true, roleBox, entry);
             } else {
                 if (!roleBox.getCustomRole(name) && !roleBox.getDefaultRole(name)) {
-                    processNewCustomRoleSubmission(name, description, team, deckManager, true, roleBox, entry);
+                    processNewCustomRoleSubmission(name, description, team, revealedAlignment, evilChatAccess, deckManager, true, roleBox, entry);
                 } else {
                     toast('There is already a role with this name', 'error', true, true, 'short');
                 }
@@ -571,6 +647,8 @@ function initializeRemainingEventListeners (deckManager, roleBox) {
             document.getElementById('role-name').value = '';
             document.getElementById('role-alignment').value = ALIGNMENT.GOOD;
             document.getElementById('role-description').value = '';
+            document.getElementById('role-revealed-alignment').value = ALIGNMENT.GOOD;
+            document.getElementById('role-evil-chat-access').value = 'false';
             ModalManager.displayModal(
                 'role-modal',
                 'modal-background',
@@ -580,7 +658,7 @@ function initializeRemainingEventListeners (deckManager, roleBox) {
     );
 }
 
-function processNewCustomRoleSubmission (name, description, team, deckManager, isUpdate, roleBox, option = null) {
+function processNewCustomRoleSubmission (name, description, team, revealedAlignment, evilChatAccess, deckManager, isUpdate, roleBox, option = null) {
     if (name.length > PRIMITIVES.MAX_CUSTOM_ROLE_NAME_LENGTH) {
         toast('Your name is too long (max ' + PRIMITIVES.MAX_CUSTOM_ROLE_NAME_LENGTH + ' characters).', 'error', true);
         return;
@@ -590,11 +668,18 @@ function processNewCustomRoleSubmission (name, description, team, deckManager, i
         return;
     }
     if (isUpdate) {
-        roleBox.updateCustomRole(option, name, description, team);
+        roleBox.updateCustomRole(option, name, description, team, revealedAlignment, evilChatAccess);
         ModalManager.dispelModal('role-modal', 'modal-background');
         toast('Role Updated', 'success', true);
     } else {
-        roleBox.addCustomRole({ role: name, description: description, team: team, custom: true });
+        roleBox.addCustomRole({
+            role: name,
+            description: description,
+            team: team,
+            revealedAlignment: revealedAlignment,
+            evilChatAccess: evilChatAccess,
+            custom: true
+        });
         ModalManager.dispelModal('role-modal', 'modal-background');
         toast('Role Created', 'success', true);
     }

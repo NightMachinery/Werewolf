@@ -146,18 +146,15 @@ The code currently syncs these actions through Redis pub/sub:
 
 The app intentionally does **not** run the full social game for you.
 
-It does **not** currently enforce:
+It does **not** currently enforce everything.
 
-- day/night progression
-- turn order
-- win conditions
-- faction victory checks
-- role abilities
-- night action resolution
-- voting rules
-- elimination rules beyond the moderator pressing kill/reveal
-- auto-ending the game when the timer expires
+It still leaves these areas mostly manual:
+
+- social deduction / speaking order
+- custom-role powers beyond alignment, revealed alignment, and evil-chat access
+- independent-role victory conditions
 - role-balance validation beyond basic schema/value checks
+- automatic timer-expiry game ending
 
 ## Practical summary
 
@@ -169,6 +166,7 @@ The code is strongest at:
 - hiding/revealing information correctly
 - moderator delegation rules
 - timer syncing
+- optional day/night progression, voting, private evil chat/history, and built-in role resolution when enforcement mode is enabled
 - resetting state safely
 
-The code deliberately leaves the actual Werewolf/Mafia moderation decisions to humans.
+The code still deliberately leaves the human/social part of Werewolf/Mafia to the players and moderator.

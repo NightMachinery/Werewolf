@@ -1,6 +1,45 @@
 const GameStateCurator = require('./GameStateCurator');
 const GameCreationRequest = require('../model/GameCreationRequest');
-const { EVENT_IDS, STATUS, USER_TYPES, GAME_PROCESS_COMMANDS, REDIS_CHANNELS, PRIMITIVES } = require('../config/globals');
+const {
+    EVENT_IDS,
+    STATUS,
+    USER_TYPES,
+    GAME_PROCESS_COMMANDS,
+    REDIS_CHANNELS,
+    PRIMITIVES,
+    ALIGNMENT
+} = require('../config/globals');
+const {
+    ACTION_TYPES,
+    PHASES,
+    VOTE_TYPES,
+    addEvilChatEntry,
+    addEvilHistoryEntry,
+    addPrivateNotice,
+    addPublicHistoryEntry,
+    canUseEvilChat,
+    canVoteAtNight,
+    clearNightActions,
+    deadNightVoters,
+    eliminatePlayer,
+    getLivingAlignmentCounts,
+    getLivingParticipants,
+    getLivingPlayers,
+    getOpenVote,
+    livingNightVoters,
+    livingVillageVoters,
+    maybeAutoEndGame,
+    maybeWakeSleepingEvil,
+    normalizeDeckEntry,
+    shouldAllowFirstDayVote,
+    shouldAllowNightKillVote,
+    submitVote,
+    tallyVote,
+    resolveHunterPromptIfNeeded,
+    revivePersonState,
+    roleIsSeerFamily,
+    createEnforcementState
+} = require('./Enforcement');
 
 async function handleTimerCommand (timerEventSubtype, game, socketId, vars) {
     switch (timerEventSubtype) {
@@ -208,6 +247,173 @@ function assignModeratorRole (game, nextModerator) {
     game.currentModeratorId = nextModerator.id;
 }
 
+function syncRoomState (game, vars) {
+    vars.gameManager.namespace.to(game.accessCode).emit(EVENT_IDS.SYNC_GAME_STATE);
+}
+
+function getPersonOrNull (game, personId) {
+    return game.people.find((person) => person.id === personId) || null;
+}
+
+function getVoteCandidateNameMap (game, candidateIds) {
+    return candidateIds.reduce((accumulator, candidateId) => {
+        const person = getPersonOrNull(game, candidateId);
+        accumulator[candidateId] = person?.name || candidateId;
+        return accumulator;
+    }, {});
+}
+
+function buildVoteHistoryEntry (game, vote, resolution) {
+    const candidateNames = getVoteCandidateNameMap(game, vote.candidateIds);
+    const ballots = Object.entries(vote.ballots).map(([voterId, ballot]) => ({
+        voterId,
+        voterName: getPersonOrNull(game, voterId)?.name || voterId,
+        passed: Boolean(ballot.passed),
+        selections: ballot.selections,
+        selectionNames: ballot.selections.map((selectionId) => candidateNames[selectionId] || selectionId)
+    }));
+    const totals = Object.entries(resolution.totals).map(([candidateId, count]) => ({
+        candidateId,
+        candidateName: candidateNames[candidateId] || candidateId,
+        count
+    }));
+
+    return {
+        type: vote.type + '-vote',
+        round: vote.round,
+        text: vote.type === VOTE_TYPES.DAY
+            ? 'Day vote round ' + vote.round + ' closed.'
+            : 'Night vote round ' + vote.round + ' closed.',
+        candidateNames,
+        ballots,
+        totals,
+        leaders: resolution.leaders,
+        winnerId: resolution.winnerId,
+        winnerName: candidateNames[resolution.winnerId] || null,
+        tieBrokenBy: resolution.tieBrokenBy
+    };
+}
+
+function maybeCloseNightVote (game) {
+    const vote = getOpenVote(game, VOTE_TYPES.NIGHT);
+    if (!vote || vote.status !== 'open') {
+        return { closed: false };
+    }
+
+    const livingVoters = livingNightVoters(game).map((person) => person.id);
+    if (livingVoters.some((voterId) => !vote.ballots[voterId])) {
+        return { closed: false };
+    }
+
+    const deadVoters = deadNightVoters(game).map((person) => person.id);
+    if (deadVoters.length > 0 && !vote.deadVoteWindowEndsAt) {
+        vote.deadVoteWindowStartedAt = new Date().toJSON();
+        vote.deadVoteWindowEndsAt = new Date(Date.now() + 30000).toJSON();
+        return { closed: false, startedDeadWindow: true };
+    }
+
+    if (
+        deadVoters.length > 0
+        && new Date(vote.deadVoteWindowEndsAt).getTime() > Date.now()
+        && deadVoters.some((voterId) => !vote.ballots[voterId])
+    ) {
+        return { closed: false };
+    }
+
+    vote.status = 'closed';
+    const resolution = tallyVote(game, vote);
+    const allPassed = Object.values(vote.ballots).every((ballot) => ballot.passed);
+    vote.resolution = resolution;
+    game.enforcement.pendingNightActions.resolvedNightVote = resolution;
+    game.enforcement.pendingNightActions.pendingKillTargetId = resolution.winnerId;
+    const historyEntry = buildVoteHistoryEntry(game, vote, resolution);
+    historyEntry.allPassed = allPassed;
+    addEvilHistoryEntry(game, historyEntry);
+    addEvilHistoryEntry(game, {
+        type: 'evil-shared',
+        text: allPassed && resolution.winnerId
+            ? 'All evil players passed, so a random non-evil target was chosen: ' + (historyEntry.winnerName || 'unknown') + '.'
+            : resolution.winnerId
+            ? 'Night target chosen: ' + (historyEntry.winnerName || 'unknown') +
+                (resolution.tieBrokenBy ? ' (tie broken by ' + resolution.tieBrokenBy + ')' : '')
+            : 'Night vote ended in a tie without a single winner.',
+        winnerId: resolution.winnerId,
+        winnerName: historyEntry.winnerName,
+        tieBrokenBy: resolution.tieBrokenBy,
+        allPassed,
+        shareWithBlindMinion: true
+    });
+    return { closed: true, resolution };
+}
+
+function resolveNightActions (game) {
+    const pending = game.enforcement.pendingNightActions;
+    const protectedIds = new Set(Object.values(pending.protect));
+    const witchHealTargetId = Object.values(pending.witch).find((entry) => entry.type === ACTION_TYPES.HEAL)?.targetId || null;
+    const witchPoisonEntry = Object.values(pending.witch).find((entry) => entry.type === ACTION_TYPES.POISON) || null;
+
+    if (pending.pendingKillTargetId) {
+        const target = getPersonOrNull(game, pending.pendingKillTargetId);
+        const saved = protectedIds.has(target?.id) || witchHealTargetId === target?.id;
+        if (target && !saved) {
+            const result = eliminatePlayer(game, target, 'night kill');
+            if (result.eliminated) {
+                resolveHunterPromptIfNeeded(game, target);
+            }
+        } else if (target && saved) {
+            addPublicHistoryEntry(game, { type: 'saved', text: target.name + ' survived the night.' });
+        }
+    }
+
+    if (witchPoisonEntry) {
+        const target = getPersonOrNull(game, witchPoisonEntry.targetId);
+        const result = eliminatePlayer(game, target, 'witch poison');
+        if (result.eliminated) {
+            resolveHunterPromptIfNeeded(game, target);
+        }
+    }
+
+    for (const [seerId, targetId] of Object.entries(pending.inspect)) {
+        const seer = getPersonOrNull(game, seerId);
+        const target = getPersonOrNull(game, targetId);
+        if (!seer || !target) {
+            continue;
+        }
+        const priorInspections = seer.roleState.inspectedTargets.filter((entry) => entry === target.id).length;
+        seer.roleState.inspectedTargets.push(target.id);
+        const seenAlignment = seer.gameRole === 'Super Seer' && priorInspections >= 1
+            ? target.alignment
+            : (target.revealedAlignment || target.alignment);
+        addPrivateNotice(game, seer.id, target.name + ' appears to be ' + seenAlignment + '.');
+    }
+
+    for (const [actorId, targetId] of Object.entries(pending.senseSeer)) {
+        const actor = getPersonOrNull(game, actorId);
+        const target = getPersonOrNull(game, targetId);
+        if (!actor || !target) {
+            continue;
+        }
+        addPrivateNotice(
+            game,
+            actor.id,
+            target.name + (roleIsSeerFamily(target.gameRole) ? ' is part of the seer family.' : ' is not part of the seer family.')
+        );
+    }
+
+    maybeWakeSleepingEvil(game);
+    maybeAutoEndGame(game);
+}
+
+function ensureNightVoteResolvedBeforeDay (game) {
+    const vote = getOpenVote(game, VOTE_TYPES.NIGHT);
+    if (!vote) {
+        return true;
+    }
+
+    const closeResult = maybeCloseNightVote(game);
+    return Boolean(closeResult.closed);
+}
+
 const Events = [
     {
         id: EVENT_IDS.PLAYER_JOINED,
@@ -310,7 +516,7 @@ const Events = [
                 return;
             }
             if (GameCreationRequest.deckIsValid(socketArgs.deck)) {
-                game.deck = socketArgs.deck;
+                game.deck = socketArgs.deck.map(normalizeDeckEntry);
                 game.gameSize = socketArgs.deck.reduce(
                     (accumulator, currentValue) => accumulator + currentValue.quantity,
                     0
@@ -383,6 +589,11 @@ const Events = [
             if (game.isStartable) {
                 game.status = STATUS.IN_PROGRESS;
                 vars.gameManager.deal(game);
+                game.enforcement = createEnforcementState(game);
+                if (game.enforcement?.enabled) {
+                    addPublicHistoryEntry(game, { type: 'phase', text: 'Enforcement mode is active. Day 1 has begun.' });
+                    clearNightActions(game);
+                }
                 if (game.hasTimer) {
                     game.timerParams.paused = true;
                     await vars.gameManager.runTimer(game);
@@ -407,15 +618,27 @@ const Events = [
             }
             const person = game.people.find((person) => person.id === socketArgs.personId);
             if (person && !person.out) {
-                person.userType = person.userType === USER_TYPES.BOT
-                    ? USER_TYPES.KILLED_BOT
-                    : USER_TYPES.KILLED_PLAYER;
-                person.out = true;
-                person.killed = true;
+                const result = game.enforcement?.enabled
+                    ? eliminatePlayer(game, person, 'moderator override kill')
+                    : null;
+                if (!game.enforcement?.enabled) {
+                    person.userType = person.userType === USER_TYPES.BOT
+                        ? USER_TYPES.KILLED_BOT
+                        : USER_TYPES.KILLED_PLAYER;
+                    person.out = true;
+                    person.killed = true;
+                } else if (result.eliminated) {
+                    resolveHunterPromptIfNeeded(game, person);
+                    maybeAutoEndGame(game);
+                }
             }
         },
         communicate: async (game, socketArgs, vars) => {
             if (vars.authorizationFailed) {
+                return;
+            }
+            if (game.enforcement?.enabled) {
+                syncRoomState(game, vars);
                 return;
             }
             const person = game.people.find((person) => person.id === socketArgs.personId);
@@ -433,10 +656,20 @@ const Events = [
             const person = game.people.find((person) => person.id === socketArgs.personId);
             if (person && !person.revealed) {
                 person.revealed = true;
+                if (game.enforcement?.enabled) {
+                    addPublicHistoryEntry(game, {
+                        type: 'reveal',
+                        text: person.name + ' was revealed as ' + person.gameRole + '.'
+                    });
+                }
             }
         },
         communicate: async (game, socketArgs, vars) => {
             if (vars.authorizationFailed) {
+                return;
+            }
+            if (game.enforcement?.enabled) {
+                syncRoomState(game, vars);
                 return;
             }
             const person = game.people.find((person) => person.id === socketArgs.personId);
@@ -446,10 +679,30 @@ const Events = [
                     {
                         id: person.id,
                         gameRole: person.gameRole,
-                        alignment: person.alignment
+                        alignment: person.revealedAlignment || person.alignment
                     }
                 );
             }
+        }
+    },
+    {
+        id: EVENT_IDS.REVIVE_PLAYER,
+        stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars)) {
+                return;
+            }
+            const person = game.people.find((entry) => entry.id === socketArgs.personId);
+            if (!person || !person.out) {
+                return;
+            }
+            revivePersonState(person);
+            addPublicHistoryEntry(game, { type: 'revive', text: person.name + ' was revived by the moderator.' });
+        },
+        communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
+            syncRoomState(game, vars);
         }
     },
     {
@@ -607,6 +860,343 @@ const Events = [
                 return;
             }
             vars.gameManager.namespace.to(game.accessCode).emit(EVENT_IDS.SYNC_GAME_STATE);
+        }
+    },
+    {
+        id: EVENT_IDS.ADVANCE_PHASE,
+        stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars) || !game.enforcement?.enabled) {
+                return;
+            }
+            if (game.enforcement.activeHunterPrompt) {
+                return;
+            }
+
+            if (game.enforcement.phase === PHASES.DAY) {
+                if (game.enforcement.openVote) {
+                    return;
+                }
+                game.enforcement.phase = PHASES.NIGHT;
+                game.enforcement.nightNumber += 1;
+                game.enforcement.openVote = null;
+                clearNightActions(game);
+                if (shouldAllowNightKillVote(game)) {
+                    game.enforcement.nightVoteRound = (game.enforcement.nightVoteRound || 0) + 1;
+                    game.enforcement.openVote = {
+                        type: VOTE_TYPES.NIGHT,
+                        round: game.enforcement.nightVoteRound,
+                        status: 'open',
+                        candidateIds: getLivingParticipants(game)
+                            .filter((person) => person.alignment !== ALIGNMENT.EVIL)
+                            .map((person) => person.id),
+                        ballots: {},
+                        openedAt: new Date().toJSON(),
+                        deadVoteWindowStartedAt: null,
+                        deadVoteWindowEndsAt: null
+                    };
+                }
+                addPublicHistoryEntry(game, {
+                    type: 'phase',
+                    text: 'Night ' + game.enforcement.nightNumber + ' has begun.'
+                });
+                return;
+            }
+
+            if (!ensureNightVoteResolvedBeforeDay(game)) {
+                return;
+            }
+
+            resolveNightActions(game);
+            game.enforcement.phase = PHASES.DAY;
+            game.enforcement.dayNumber += 1;
+            game.enforcement.openVote = null;
+            addPublicHistoryEntry(game, {
+                type: 'phase',
+                text: 'Day ' + game.enforcement.dayNumber + ' has begun.'
+            });
+        },
+        communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
+            syncRoomState(game, vars);
+        }
+    },
+    {
+        id: EVENT_IDS.START_DAY_VOTE,
+        stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars) || !game.enforcement?.enabled || game.enforcement.phase !== PHASES.DAY) {
+                return;
+            }
+            if (!shouldAllowFirstDayVote(game) || game.enforcement.openVote) {
+                return;
+            }
+            const candidateIds = (socketArgs?.candidateIds || getLivingParticipants(game).map((person) => person.id))
+                .filter((candidateId, index, array) => array.indexOf(candidateId) === index)
+                .filter((candidateId) => {
+                    const person = getPersonOrNull(game, candidateId);
+                    return person && !person.out;
+                });
+            if (candidateIds.length === 0) {
+                return;
+            }
+            game.enforcement.dayVoteRound = (game.enforcement.dayVoteRound || 0) + 1;
+            game.enforcement.openVote = {
+                type: VOTE_TYPES.DAY,
+                round: game.enforcement.dayVoteRound,
+                status: 'open',
+                candidateIds,
+                ballots: {},
+                openedAt: new Date().toJSON()
+            };
+            addPublicHistoryEntry(game, {
+                type: 'vote-open',
+                text: 'Day vote round ' + game.enforcement.dayVoteRound + ' has started.'
+            });
+        },
+        communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
+            syncRoomState(game, vars);
+        }
+    },
+    {
+        id: EVENT_IDS.SUBMIT_VOTE,
+        stateChange: async (game, socketArgs, vars) => {
+            const requester = getRequestingPerson(game, vars);
+            const vote = game.enforcement?.openVote;
+            if (!requester || !vote || vote.status !== 'open') {
+                return;
+            }
+
+            const selections = Array.isArray(socketArgs?.selections)
+                ? socketArgs.selections.filter((selection, index, array) => array.indexOf(selection) === index)
+                : [];
+            const passed = Boolean(socketArgs?.passed);
+            if (selections.some((selectionId) => !vote.candidateIds.includes(selectionId))) {
+                return;
+            }
+
+            if (vote.type === VOTE_TYPES.DAY) {
+                const eligible = livingVillageVoters(game).map((person) => person.id);
+                if (!eligible.includes(requester.id)) {
+                    return;
+                }
+                submitVote(vote, requester.id, selections, passed);
+                return;
+            }
+
+            if (!canVoteAtNight(requester)) {
+                return;
+            }
+
+            const deadWindowStarted = Boolean(vote.deadVoteWindowEndsAt);
+            if (requester.out && (!deadWindowStarted || new Date(vote.deadVoteWindowEndsAt).getTime() < Date.now())) {
+                return;
+            }
+            if (requester.out && !deadNightVoters(game).find((person) => person.id === requester.id)) {
+                return;
+            }
+            submitVote(vote, requester.id, selections, passed);
+            maybeCloseNightVote(game);
+        },
+        communicate: async (game, socketArgs, vars) => {
+            syncRoomState(game, vars);
+        }
+    },
+    {
+        id: EVENT_IDS.CLOSE_DAY_VOTE,
+        stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars) || !game.enforcement?.enabled) {
+                return;
+            }
+            const vote = getOpenVote(game, VOTE_TYPES.DAY);
+            if (!vote || vote.status !== 'open') {
+                return;
+            }
+            vote.status = 'closed';
+            vote.resolution = tallyVote(game, vote);
+            addPublicHistoryEntry(game, buildVoteHistoryEntry(game, vote, vote.resolution));
+        },
+        communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
+            syncRoomState(game, vars);
+        }
+    },
+    {
+        id: EVENT_IDS.RESOLVE_DAY_VOTE,
+        stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars) || !game.enforcement?.enabled) {
+                return;
+            }
+            const vote = getOpenVote(game, VOTE_TYPES.DAY);
+            if (!vote || vote.status !== 'closed' || !vote.resolution) {
+                return;
+            }
+
+            const { leaders } = vote.resolution;
+            let targetId = null;
+            if (socketArgs?.mode === 'kill' && leaders.length === 1) {
+                targetId = leaders[0];
+            } else if (socketArgs?.mode === 'randomTied' && leaders.length > 1) {
+                targetId = leaders[Math.floor(Math.random() * leaders.length)] || null;
+            } else if (socketArgs?.mode === 'pass') {
+                addPublicHistoryEntry(game, { type: 'vote-pass', text: 'The moderator passed on the current day vote result.' });
+                game.enforcement.openVote = null;
+                return;
+            } else {
+                return;
+            }
+
+            const target = getPersonOrNull(game, targetId);
+            const result = eliminatePlayer(game, target, 'day vote');
+            if (result.eliminated) {
+                resolveHunterPromptIfNeeded(game, target);
+            }
+            addPublicHistoryEntry(game, {
+                type: 'vote-resolution',
+                text: target ? target.name + ' was eliminated by the day vote.' : 'The day vote resolved.'
+            });
+            game.enforcement.openVote = null;
+            maybeAutoEndGame(game);
+        },
+        communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
+            syncRoomState(game, vars);
+        }
+    },
+    {
+        id: EVENT_IDS.SUBMIT_NIGHT_ACTION,
+        stateChange: async (game, socketArgs, vars) => {
+            const requester = getRequestingPerson(game, vars);
+            if (!requester || !game.enforcement?.enabled || game.enforcement.phase !== PHASES.NIGHT) {
+                return;
+            }
+            const target = socketArgs?.targetId ? getPersonOrNull(game, socketArgs.targetId) : null;
+            const pending = game.enforcement.pendingNightActions;
+
+            switch (socketArgs?.actionType) {
+                case ACTION_TYPES.INSPECT:
+                    if ((requester.gameRole === 'Seer' || requester.gameRole === 'Super Seer') && target && !target.out) {
+                        pending.inspect[requester.id] = target.id;
+                    }
+                    break;
+                case ACTION_TYPES.SENSE_SEER:
+                    if (requester.gameRole === 'Sorceress' && target && !target.out) {
+                        pending.senseSeer[requester.id] = target.id;
+                    }
+                    break;
+                case ACTION_TYPES.PROTECT:
+                    if (requester.gameRole === 'Doctor' && target && !target.out) {
+                        pending.protect[requester.id] = target.id;
+                    }
+                    break;
+                case ACTION_TYPES.HEAL:
+                    if (requester.gameRole === 'Witch' && !requester.roleState.witchHealUsed && target && !target.out) {
+                        const existingAction = pending.witch[requester.id];
+                        if (!existingAction || existingAction.type !== ACTION_TYPES.POISON) {
+                            pending.witch[requester.id] = { type: ACTION_TYPES.HEAL, targetId: target.id };
+                            requester.roleState.witchHealUsed = true;
+                        }
+                    }
+                    break;
+                case ACTION_TYPES.POISON:
+                    if (requester.gameRole === 'Witch' && !requester.roleState.witchPoisonUsed && target && !target.out) {
+                        const existingAction = pending.witch[requester.id];
+                        if (!existingAction || existingAction.type !== ACTION_TYPES.HEAL) {
+                            pending.witch[requester.id] = { type: ACTION_TYPES.POISON, targetId: target.id };
+                            requester.roleState.witchPoisonUsed = true;
+                        }
+                    }
+                    break;
+                case ACTION_TYPES.BRUTAL_TARGET:
+                    if (
+                        game.enforcement.activeHunterPrompt
+                        && (
+                            game.enforcement.activeHunterPrompt.hunterId === requester.id
+                            || isCurrentModerator(game, requester)
+                        )
+                    ) {
+                        const hunter = getPersonOrNull(game, game.enforcement.activeHunterPrompt.hunterId);
+                        if (hunter) {
+                            hunter.roleState.brutalPending = false;
+                        }
+                        game.enforcement.activeHunterPrompt = null;
+                        if (socketArgs?.passed) {
+                            addPublicHistoryEntry(game, {
+                                type: 'brutal-pass',
+                                text: (hunter?.name || 'The Brutal Hunter') + ' did not take a revenge kill.'
+                            });
+                            maybeAutoEndGame(game);
+                            break;
+                        }
+                        if (target && !target.out) {
+                            const result = eliminatePlayer(game, target, 'brutal hunter retaliation', true);
+                            if (result.eliminated) {
+                                resolveHunterPromptIfNeeded(game, target);
+                            }
+                            maybeAutoEndGame(game);
+                        }
+                    }
+                    break;
+                default:
+                    break;
+            }
+        },
+        communicate: async (game, socketArgs, vars) => {
+            syncRoomState(game, vars);
+        }
+    },
+    {
+        id: EVENT_IDS.SEND_EVIL_CHAT,
+        stateChange: async (game, socketArgs, vars) => {
+            const requester = getRequestingPerson(game, vars);
+            if (
+                !requester
+                || !game.enforcement?.enabled
+                || game.enforcement.phase !== PHASES.NIGHT
+                || !canUseEvilChat(requester)
+                || typeof socketArgs?.message !== 'string'
+                || socketArgs.message.trim().length === 0
+            ) {
+                return;
+            }
+            addEvilChatEntry(game, requester, socketArgs.message.trim().slice(0, 300));
+        },
+        communicate: async (game, socketArgs, vars) => {
+            syncRoomState(game, vars);
+        }
+    },
+    {
+        id: EVENT_IDS.REVEAL_ALIGNMENT_COUNTS,
+        stateChange: async (game, socketArgs, vars) => {
+            if (!requireActiveModerator(game, vars) || !game.enforcement?.enabled) {
+                return;
+            }
+            const maxUses = game.settings?.maxAlignmentCountReveals;
+            if (maxUses !== null && game.enforcement.countRevealUses >= maxUses) {
+                return;
+            }
+            game.enforcement.countRevealUses += 1;
+            const counts = getLivingAlignmentCounts(game);
+            addPublicHistoryEntry(game, {
+                type: 'alignment-counts',
+                text: 'Alignment counts were revealed.',
+                counts,
+                uses: game.enforcement.countRevealUses,
+                maxUses
+            });
+        },
+        communicate: async (game, socketArgs, vars) => {
+            if (vars.authorizationFailed) {
+                return;
+            }
+            syncRoomState(game, vars);
         }
     },
     {

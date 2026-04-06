@@ -277,6 +277,24 @@ describe('Events', () => {
                 expect(game.timerParams.paused).toEqual(true);
                 expect(gameManager.runTimer).toHaveBeenCalled();
             });
+
+            it('should initialize enforcement state when enabled', async () => {
+                game.isStartable = true;
+                game.settings = {
+                    enforcementEnabled: true,
+                    allowFirstDayVillageVote: true,
+                    allowNightKillVote: true,
+                    evilVoteHistoryLimit: null,
+                    maxAlignmentCountReveals: null
+                };
+
+                await Events.find((e) => e.id === EVENT_IDS.START_GAME)
+                    .stateChange(game, { id: 'b', assigned: true }, { gameManager: gameManager });
+
+                expect(game.enforcement.enabled).toBeTrue();
+                expect(game.enforcement.phase).toEqual('day');
+                expect(game.enforcement.publicHistory.length).toBeGreaterThan(0);
+            });
         });
         describe('communicate', () => {
             it('should communicate the start event to the room', async () => {
@@ -341,6 +359,7 @@ describe('Events', () => {
         });
         describe('communicate', () => {
             it('should communicate the killed player to the room', async () => {
+                game.people.find((p) => p.id === 'b').revealedAlignment = 'good';
                 await Events.find((e) => e.id === EVENT_IDS.REVEAL_PLAYER)
                     .communicate(game, { personId: 'b' }, { gameManager: gameManager });
                 expect(namespace.in).toHaveBeenCalledWith(game.accessCode);
@@ -348,6 +367,21 @@ describe('Events', () => {
                     EVENT_IDS.REVEAL_PLAYER,
                     { id: 'b', gameRole: 'Villager', alignment: 'good' }
                 );
+            });
+        });
+    });
+    describe(EVENT_IDS.REVIVE_PLAYER, () => {
+        describe('stateChange', () => {
+            it('should revive the indicated player', async () => {
+                await Events.find((e) => e.id === EVENT_IDS.KILL_PLAYER)
+                    .stateChange(game, { personId: 'b' }, { gameManager: gameManager });
+
+                await Events.find((e) => e.id === EVENT_IDS.REVIVE_PLAYER)
+                    .stateChange(game, { personId: 'b' }, { gameManager: gameManager });
+
+                expect(game.people.find(p => p.id === 'b').out).toBeFalse();
+                expect(game.people.find(p => p.id === 'b').killed).toBeFalse();
+                expect(game.people.find(p => p.id === 'b').userType).toEqual(USER_TYPES.PLAYER);
             });
         });
     });

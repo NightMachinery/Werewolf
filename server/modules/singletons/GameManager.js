@@ -12,6 +12,12 @@ const GameStateCurator = require('../GameStateCurator');
 const UsernameGenerator = require('../UsernameGenerator');
 const GameCreationRequest = require('../../model/GameCreationRequest');
 const ServerTimer = require('../ServerTimer');
+const {
+    createEnforcementState,
+    initializePersonRoleState,
+    normalizeDeckEntry,
+    normalizeSettings
+} = require('../Enforcement');
 
 class GameManager {
     constructor (logger, environment, instanceId) {
@@ -25,6 +31,7 @@ class GameManager {
         this.namespace = null;
         this.instanceId = instanceId;
         this.timers = {};
+        this.deadVoteWindows = {};
         GameManager.instance = this;
     }
 
@@ -61,12 +68,13 @@ class GameManager {
         this.logger.debug('Received request to create new game.');
         return GameCreationRequest.validate(gameParams).then(async () => {
             const req = new GameCreationRequest(
-                gameParams.deck,
+                gameParams.deck.map(normalizeDeckEntry),
                 gameParams.hasTimer,
                 gameParams.timerParams,
                 gameParams.moderatorName,
                 gameParams.hasDedicatedModerator,
-                gameParams.isTestGame
+                gameParams.isTestGame,
+                normalizeSettings(gameParams.settings)
             );
             const newAccessCode = await this.generateAccessCode(PRIMITIVES.ACCESS_CODE_CHAR_POOL);
             if (newAccessCode === null) {
@@ -89,7 +97,9 @@ class GameManager {
                 req.hasDedicatedModerator,
                 moderator.id,
                 new Date().toJSON(),
-                req.timerParams
+                req.timerParams,
+                req.settings,
+                null
             );
             newGame.people = initializePeopleForGame(req.deck, moderator, this.shuffle, req.isTestGame, newGame.gameSize);
             newGame.isStartable = newGame.people.filter(person => person.userType === USER_TYPES.PLAYER
@@ -275,10 +285,14 @@ class GameManager {
             game.people[i].gameRole = null;
             game.people[i].gameRoleDescription = null;
             game.people[i].alignment = null;
+            game.people[i].revealedAlignment = null;
+            game.people[i].evilChatAccess = false;
+            game.people[i].roleState = {};
             game.people[i].customRole = null;
         }
 
         game.status = STATUS.LOBBY;
+        game.enforcement = createEnforcementState(game);
 
         await this.refreshGame(game);
         await this.eventManager.publisher?.publish(
@@ -321,6 +335,9 @@ class GameManager {
             person.customRole = cards[i].custom;
             person.gameRoleDescription = cards[i].description;
             person.alignment = cards[i].team;
+            person.revealedAlignment = cards[i].revealedAlignment || cards[i].team;
+            person.evilChatAccess = Boolean(cards[i].evilChatAccess);
+            initializePersonRoleState(person);
             i ++;
         }
     }

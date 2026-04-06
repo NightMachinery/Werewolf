@@ -745,3 +745,17 @@ input[type="number"] {
         min-width: 155px;
     }
 }
+
+.checkbox-label {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin: 0.35rem 0;
+}
+
+#logic-settings {
+    margin-top: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}

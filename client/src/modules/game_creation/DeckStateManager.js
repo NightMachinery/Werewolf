@@ -228,13 +228,20 @@ export class DeckStateManager {
                     } else {
                         roleImg.src = '../images/roles/' + sortedDeck[i].role.replaceAll(' ', '') + '.png';
                     }
+                    roleImg.onerror = () => {
+                        roleImg.src = '../images/roles/custom-role.svg';
+                    };
                 } else {
                     document.getElementById('custom-role-info-modal-image-placeholder').style.display = 'none';
                 }
                 const nameEl = document.getElementById('custom-role-info-modal-name');
+                const revealedAlignmentEl = document.getElementById('custom-role-info-modal-revealed-alignment');
                 alignmentEl.classList.remove(ALIGNMENT.GOOD);
                 alignmentEl.classList.remove(ALIGNMENT.EVIL);
                 alignmentEl.classList.remove(ALIGNMENT.INDEPENDENT);
+                revealedAlignmentEl.classList.remove(ALIGNMENT.GOOD);
+                revealedAlignmentEl.classList.remove(ALIGNMENT.EVIL);
+                revealedAlignmentEl.classList.remove(ALIGNMENT.INDEPENDENT);
                 nameEl.classList.remove(ALIGNMENT.GOOD);
                 nameEl.classList.remove(ALIGNMENT.EVIL);
                 nameEl.classList.remove(ALIGNMENT.INDEPENDENT);
@@ -242,8 +249,11 @@ export class DeckStateManager {
                 nameEl.innerText = sortedDeck[i].role;
                 nameEl.classList.add(sortedDeck[i].team);
                 alignmentEl.classList.add(sortedDeck[i].team);
+                revealedAlignmentEl.classList.add(sortedDeck[i].revealedAlignment || sortedDeck[i].team);
                 document.getElementById('custom-role-info-modal-description').innerText = sortedDeck[i].description;
                 alignmentEl.innerText = sortedDeck[i].team;
+                revealedAlignmentEl.innerText = sortedDeck[i].revealedAlignment || sortedDeck[i].team;
+                document.getElementById('custom-role-info-modal-evil-chat').innerText = sortedDeck[i].evilChatAccess ? 'yes' : 'no';
                 ModalManager.displayModal('custom-role-info-modal', 'modal-background', 'close-custom-role-info-modal-button');
             }
         };
