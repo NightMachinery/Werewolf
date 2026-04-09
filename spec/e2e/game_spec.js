@@ -407,6 +407,35 @@ describe('game page', () => {
         });
     });
 
+    describe('in-progress game - original moderator view', () => {
+        beforeEach(async () => {
+            document.body.innerHTML = '';
+            const originalModeratorGame = deepCopy(mockGames.moderatorGame);
+            originalModeratorGame.originalModeratorId = originalModeratorGame.client.id;
+
+            mockSocket.emit = function (eventName, ...args) {
+                switch (args[0]) {
+                    case EVENT_IDS.FETCH_GAME_STATE:
+                        args[args.length - 1](originalModeratorGame);
+                        break;
+                    default:
+                        break;
+                }
+            };
+            spyOn(mockSocket, 'emit').and.callThrough();
+            await gameHandler(mockSocket, window, gameTemplate);
+            mockSocket.eventHandlers.connect();
+            await mockSocket.eventHandlers.getTimeRemaining(120000, true);
+        });
+
+        it('should display moderator controls without throwing and place them before role info', () => {
+            const roleInfoContainer = document.getElementById('role-info-button').parentElement;
+
+            expect(document.getElementById('moderator-control-button')).not.toBeNull();
+            expect(roleInfoContainer.previousElementSibling.id).toEqual('moderator-control-button');
+        });
+    });
+
     describe('in-progress game - temporary moderator view', () => {
         beforeEach(async () => {
             const tempModGame = deepCopy(mockGames.moderatorGame);

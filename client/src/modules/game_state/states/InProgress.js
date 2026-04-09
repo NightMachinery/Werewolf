@@ -747,8 +747,9 @@ function insertModeratorControlButton (gameState, socket) {
         SharedStateUtil.openModeratorControlModal(gameState, socket);
     });
 
-    const roleInfoContainer = gameHeader.querySelector('div:last-child');
-    if (roleInfoContainer) {
+    const roleInfoButton = gameHeader.querySelector('#role-info-button');
+    const roleInfoContainer = roleInfoButton?.parentElement;
+    if (roleInfoContainer && roleInfoContainer.parentElement === gameHeader) {
         gameHeader.insertBefore(moderatorControlButton, roleInfoContainer);
     } else {
         gameHeader.appendChild(moderatorControlButton);
